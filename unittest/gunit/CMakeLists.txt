@@ -476,7 +476,7 @@ ADD_SUBDIRECTORY(libs/utils)
 ADD_SUBDIRECTORY(libs/uuids)
 
 # Vector Search Tests
-MYSQL_ADD_EXECUTABLE(vector_unittest hnsw_index-t.cc
+MYSQL_ADD_EXECUTABLE(vector_unittest hnsw_index-t.cc hnsw_registry-t.cc
   ENABLE_EXPORTS
   LINK_LIBRARIES gunit_large server_unittest_library innobase_vector
 )

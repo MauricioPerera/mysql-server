@@ -10249,10 +10249,11 @@ int ha_innobase::update_row(const uchar *old_row, uchar *new_row) {
         }
 
         /* Use new_row data for the updated vector */
-        table->move_fields(table->field, new_row, table->record[0]);
+        ptrdiff_t row_offset = new_row - table->record[0];
+        fld->move_field_offset(row_offset);
         String vec_buf;
         fld->val_str(&vec_buf);
-        table->move_fields(table->field, table->record[0], new_row);
+        fld->move_field_offset(-row_offset);
 
         if (vec_buf.length() >= sizeof(float)) {
           const float *vec_ptr =

@@ -1908,8 +1908,13 @@ class Item_func_vector_search : public Item_str_func {
  public:
   Item_func_vector_search(const POS &pos, PT_item_list *list)
       : Item_str_func(pos, list) {}
-  Item_func_vector_search(const POS &pos, Item *a, Item *b)
-      : Item_str_func(pos, a, b) {}
+  Item_func_vector_search(const POS &pos, Item *a, Item *b, Item *c)
+      : Item_str_func(pos, a, b, c) {}
+  Item_func_vector_search(const POS &pos, Item *a, Item *b, Item *c, Item *d)
+      : Item_str_func(pos, a, b, c, d) {}
+  Item_func_vector_search(const POS &pos, Item *a, Item *b, Item *c, Item *d,
+                          Item *e)
+      : Item_str_func(pos, a, b, c, d, e) {}
   String *val_str(String *str) override;
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "vector_search"; }
