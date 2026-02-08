@@ -15,13 +15,16 @@
 */
 
 #include "vec0hnsw.h"
+#include "vector-common/vector_operations.h"
 #include <algorithm>
 #include <queue>
 #include <cmath>
 #include <limits>
 #include <fstream>
 #include <cstring>
+#include <mutex>
 #include <numeric>
+#include <shared_mutex>
 
 namespace innodb_vector {
 
@@ -43,40 +46,17 @@ HnswIndex::~HnswIndex() = default;
 
 double HnswIndex::distance_l2(const std::vector<float> &a,
                                const std::vector<float> &b) {
-  double sum = 0.0;
-  size_t n = std::min(a.size(), b.size());
-  for (size_t i = 0; i < n; ++i) {
-    double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
-    sum += diff * diff;
-  }
-  return std::sqrt(sum);
+  return vector_operations::l2_distance(a, b);
 }
 
 double HnswIndex::distance_cosine(const std::vector<float> &a,
                                    const std::vector<float> &b) {
-  double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
-  size_t n = std::min(a.size(), b.size());
-  for (size_t i = 0; i < n; ++i) {
-    double ai = static_cast<double>(a[i]);
-    double bi = static_cast<double>(b[i]);
-    dot += ai * bi;
-    norm_a += ai * ai;
-    norm_b += bi * bi;
-  }
-  double denom = std::sqrt(norm_a) * std::sqrt(norm_b);
-  if (denom < 1e-10) return 1.0;  // Avoid division by zero
-  return 1.0 - (dot / denom);
+  return vector_operations::cosine_distance(a, b);
 }
 
 double HnswIndex::distance_dot_product(const std::vector<float> &a,
                                         const std::vector<float> &b) {
-  double dot = 0.0;
-  size_t n = std::min(a.size(), b.size());
-  for (size_t i = 0; i < n; ++i) {
-    dot += static_cast<double>(a[i]) * static_cast<double>(b[i]);
-  }
-  // Negative because HNSW minimizes distance; higher dot = more similar
-  return -dot;
+  return vector_operations::neg_dot_product(a, b);
 }
 
 double HnswIndex::compute_distance(const std::vector<float> &a,

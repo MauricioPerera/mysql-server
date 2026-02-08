@@ -14,3 +14,5 @@ TARGET_INCLUDE_DIRECTORIES(innobase_vector PRIVATE
   ${CMAKE_SOURCE_DIR}/storage/innobase/vector
   ${CMAKE_SOURCE_DIR}/storage/innobase/include
 )
+
+TARGET_LINK_LIBRARIES(innobase_vector vector_common)
