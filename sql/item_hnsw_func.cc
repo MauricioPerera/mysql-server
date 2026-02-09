@@ -21,6 +21,7 @@
 #include "mysqld_error.h"
 #include "storage/innobase/include/vec0hnsw_registry.h"
 
+#include <cstdio>
 #include <sstream>
 
 // ============================================================================
@@ -302,6 +303,80 @@ String *Item_func_hnsw_load_index::val_str(String *str) {
     result_buffer.set_ascii("ERROR: Load failed", 18);
   }
 
+  null_value = false;
+  return &result_buffer;
+}
+
+// ============================================================================
+// HNSW_INFO Implementation
+// 1 arg:  (table)           -- legacy single-index
+// 2 args: (table, column)   -- multi-index
+// Returns JSON with index metadata.
+// ============================================================================
+
+bool Item_func_hnsw_info::resolve_type(THD *thd) {
+  if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_VARCHAR)) return true;
+  if (arg_count >= 2) {
+    if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_VARCHAR)) return true;
+  }
+  set_data_type_string(4096U);
+  set_nullable(true);
+  return false;
+}
+
+String *Item_func_hnsw_info::val_str(String *str) {
+  assert(fixed);
+
+  String table_buf;
+  String *table_str = args[0]->val_str(&table_buf);
+  if (!table_str) { null_value = true; return nullptr; }
+
+  std::string table_name(table_str->c_ptr_safe());
+  std::string column_name;
+
+  if (arg_count >= 2) {
+    String col_buf;
+    String *col_str = args[1]->val_str(&col_buf);
+    if (col_str) column_name = std::string(col_str->c_ptr_safe());
+  }
+
+  auto& registry = innodb_vector::HnswIndexRegistry::instance();
+  auto* index = registry.get_index(table_name, column_name);
+
+  if (!index) {
+    null_value = true;
+    return nullptr;
+  }
+
+  const auto& cfg = index->config();
+  std::string file_path = registry.get_file_path(table_name, column_name);
+
+  // Build JSON manually (no external dependency)
+  std::ostringstream json;
+  json << "{";
+  json << "\"table\": \"" << table_name << "\"";
+  if (!column_name.empty()) {
+    json << ", \"column\": \"" << column_name << "\"";
+  }
+  json << ", \"vectors\": " << index->size();
+  json << ", \"deleted\": " << index->deleted_count();
+  json << ", \"total_nodes\": " << index->total_nodes();
+  json << ", \"dimensions\": " << cfg.dimensions;
+  json << ", \"M\": " << cfg.M;
+  json << ", \"ef_construction\": " << cfg.ef_construction;
+  json << ", \"ef_search\": " << cfg.ef_search;
+  json << ", \"metric\": \""
+       << innodb_vector::HnswIndexRegistry::metric_to_string(cfg.metric)
+       << "\"";
+  json << ", \"max_elements\": " << cfg.max_elements;
+  json << ", \"dirty\": " << (index->is_dirty() ? "true" : "false");
+  if (!file_path.empty()) {
+    json << ", \"file_path\": \"" << file_path << "\"";
+  }
+  json << "}";
+
+  std::string result = json.str();
+  result_buffer.copy(result.c_str(), result.length(), &my_charset_utf8mb4_bin);
   null_value = false;
   return &result_buffer;
 }

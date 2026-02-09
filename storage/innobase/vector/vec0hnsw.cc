@@ -559,6 +559,21 @@ bool HnswIndex::contains(uint64_t id) const {
   return id_to_idx_.count(id) > 0;
 }
 
+uint64_t HnswIndex::size() const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  return active_elements_;
+}
+
+uint64_t HnswIndex::total_nodes() const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  return nodes_.size();
+}
+
+uint64_t HnswIndex::deleted_count() const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  return deleted_count_;
+}
+
 // ============================================================================
 // Persistence - Save
 // ============================================================================

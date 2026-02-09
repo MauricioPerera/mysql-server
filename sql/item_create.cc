@@ -1660,6 +1660,7 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"HNSW_DROP_INDEX", SQL_FN_V_LIST_THD(Item_func_hnsw_drop_index, 1, 2)},
     {"HNSW_SAVE_INDEX", SQL_FN_V_LIST_THD(Item_func_hnsw_save_index, 2, 3)},
     {"HNSW_LOAD_INDEX", SQL_FN_V_LIST_THD(Item_func_hnsw_load_index, 2, 3)},
+    {"HNSW_INFO", SQL_FN_V_LIST_THD(Item_func_hnsw_info, 1, 2)},
     {"COSINE_DISTANCE", SQL_FN(Item_func_cosine_distance, 2)},
     {"COSINE_SIMILARITY", SQL_FN(Item_func_cosine_similarity, 2)},
     {"DOT_PRODUCT", SQL_FN(Item_func_dot_product, 2)},

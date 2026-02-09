@@ -111,20 +111,14 @@ class HnswIndex {
   std::vector<hnsw_result_t> search(const std::vector<float> &query,
                                      uint32_t k, uint32_t ef = 0);
 
-  /**
-    Get current number of active (non-deleted) elements in the index.
-  */
-  uint64_t size() const { return active_elements_; }
+  /** Get current number of active (non-deleted) elements in the index. */
+  uint64_t size() const;
 
-  /**
-    Get total allocated nodes (including deleted).
-  */
-  uint64_t total_nodes() const { return nodes_.size(); }
+  /** Get total allocated nodes (including deleted). */
+  uint64_t total_nodes() const;
 
-  /**
-    Get number of deleted (soft-deleted) nodes.
-  */
-  uint64_t deleted_count() const { return deleted_count_; }
+  /** Get number of deleted (soft-deleted) nodes. */
+  uint64_t deleted_count() const;
 
   /**
     Get configuration.
