@@ -356,6 +356,7 @@ bool HnswIndex::insert(uint64_t id, const std::vector<float> &vector) {
   }
 
   ++active_elements_;
+  dirty_.store(true, std::memory_order_relaxed);
   return true;
 }
 
@@ -397,6 +398,7 @@ bool HnswIndex::remove(uint64_t id) {
     find_valid_entry_point();
   }
 
+  dirty_.store(true, std::memory_order_relaxed);
   return true;
 }
 
@@ -501,6 +503,7 @@ bool HnswIndex::update(uint64_t id, const std::vector<float> &vector) {
   }
 
   ++active_elements_;
+  dirty_.store(true, std::memory_order_relaxed);
   return true;
 }
 
@@ -614,7 +617,9 @@ bool HnswIndex::save_to_file(const char* path) const {
     }
   }
 
-  return file.good();
+  bool ok = file.good();
+  if (ok) dirty_.store(false, std::memory_order_relaxed);
+  return ok;
 }
 
 // ============================================================================
@@ -745,6 +750,7 @@ bool HnswIndex::load_from_file(const char* path) {
     find_valid_entry_point();
   }
 
+  dirty_.store(false, std::memory_order_relaxed);
   return true;
 }
 

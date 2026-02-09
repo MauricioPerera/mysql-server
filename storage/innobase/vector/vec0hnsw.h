@@ -14,6 +14,7 @@
 #ifndef vec0hnsw_h
 #define vec0hnsw_h
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 #include <random>
@@ -149,6 +150,12 @@ class HnswIndex {
   */
   bool contains(uint64_t id) const;
 
+  /** Check if the index has been modified since last save/load. */
+  bool is_dirty() const { return dirty_.load(std::memory_order_relaxed); }
+
+  /** Mark the index as clean (after successful save). */
+  void mark_clean() { dirty_.store(false, std::memory_order_relaxed); }
+
  private:
   hnsw_config_t config_;
   std::vector<hnsw_node_t> nodes_;
@@ -165,6 +172,7 @@ class HnswIndex {
 
   std::mt19937 rng_;
   mutable std::shared_mutex index_mutex_;
+  mutable std::atomic<bool> dirty_{false};
 
   /** Compute distance between two vectors using configured metric */
   double compute_distance(const std::vector<float> &a,

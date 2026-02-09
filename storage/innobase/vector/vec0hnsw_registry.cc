@@ -3,11 +3,13 @@
 
   HNSW Index Registry Implementation.
   Supports multiple indexes per table via table:column composite keys.
+  Supports auto-persistence via IndexEntry with file_path.
 */
 
 #include "../include/vec0hnsw_registry.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 
 namespace innodb_vector {
 
@@ -34,7 +36,29 @@ bool HnswIndexRegistry::register_index(const std::string& table_name,
   config.M0 = static_cast<uint32_t>(M * 2);
   config.ef_construction = static_cast<uint32_t>(ef_construction);
   config.metric = metric;
-  indexes_[key] = std::make_unique<HnswIndex>(config);
+
+  IndexEntry entry;
+  entry.index = std::make_unique<HnswIndex>(config);
+  indexes_[key] = std::move(entry);
+  return true;
+}
+
+bool HnswIndexRegistry::register_loaded_index(
+    const std::string& table_name,
+    const std::string& column_name,
+    std::unique_ptr<HnswIndex> index,
+    const std::string& file_path) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::string key = make_key(table_name, column_name);
+  if (indexes_.find(key) != indexes_.end()) {
+    return false;  // Already exists
+  }
+
+  IndexEntry entry;
+  entry.index = std::move(index);
+  entry.file_path = file_path;
+  indexes_[key] = std::move(entry);
   return true;
 }
 
@@ -47,14 +71,23 @@ HnswIndex* HnswIndexRegistry::get_index(const std::string& table_name,
   if (it == indexes_.end()) {
     return nullptr;
   }
-  return it->second.get();
+  return it->second.index.get();
 }
 
 bool HnswIndexRegistry::drop_index(const std::string& table_name,
                                     const std::string& column_name) {
   std::lock_guard<std::mutex> lock(mutex_);
   std::string key = make_key(table_name, column_name);
-  return indexes_.erase(key) > 0;
+  auto it = indexes_.find(key);
+  if (it == indexes_.end()) return false;
+
+  // Delete .hnsw file from disk if path is known
+  if (!it->second.file_path.empty()) {
+    std::remove(it->second.file_path.c_str());
+  }
+
+  indexes_.erase(it);
+  return true;
 }
 
 bool HnswIndexRegistry::has_index(const std::string& table_name,
@@ -90,6 +123,43 @@ std::vector<std::string> HnswIndexRegistry::get_columns_for_table(
     }
   }
   return result;
+}
+
+void HnswIndexRegistry::set_file_path(const std::string& table_name,
+                                       const std::string& column_name,
+                                       const std::string& path) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::string key = make_key(table_name, column_name);
+  auto it = indexes_.find(key);
+  if (it != indexes_.end()) {
+    it->second.file_path = path;
+  }
+}
+
+std::string HnswIndexRegistry::get_file_path(const std::string& table_name,
+                                              const std::string& column_name) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::string key = make_key(table_name, column_name);
+  auto it = indexes_.find(key);
+  if (it != indexes_.end()) {
+    return it->second.file_path;
+  }
+  return "";
+}
+
+size_t HnswIndexRegistry::save_all_dirty() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  size_t saved = 0;
+  for (auto& pair : indexes_) {
+    auto& entry = pair.second;
+    if (entry.index && entry.index->is_dirty() && !entry.file_path.empty()) {
+      if (entry.index->save_to_file(entry.file_path.c_str())) {
+        entry.index->mark_clean();
+        ++saved;
+      }
+    }
+  }
+  return saved;
 }
 
 hnsw_metric_t HnswIndexRegistry::parse_metric(const std::string& metric_str) {

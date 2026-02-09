@@ -197,6 +197,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0test.h"
 #include "ut0ut.h"
 #include "vec0hnsw_registry.h"
+#include <fstream>  /* For HNSW auto-persistence file existence checks */
 #else
 #include <typelib.h>
 #include "buf0types.h"
@@ -1659,6 +1660,32 @@ static int innodb_shutdown(handlerton *, ha_panic_function) {
   return 0;
 }
 
+/**
+  Construct the .hnsw file path for a table's VECTOR column index.
+  Uses the MySQL data directory (datadir/schema/table[.column].hnsw).
+  @param db_name     Schema/database name
+  @param table_name  Table name (bare, no schema)
+  @param column_name Column name (empty for legacy single-index)
+  @return Full path to the .hnsw file
+*/
+static std::string hnsw_make_file_path(const char *db_name,
+                                        const char *table_name,
+                                        const std::string &column_name) {
+  std::string path(MySQL_datadir_path);
+  if (!path.empty() && path.back() != '/' && path.back() != '\\') {
+    path.push_back(FN_LIBCHAR);
+  }
+  path.append(db_name);
+  path.push_back(FN_LIBCHAR);
+  path.append(table_name);
+  if (!column_name.empty()) {
+    path.push_back('.');
+    path.append(column_name);
+  }
+  path.append(".hnsw");
+  return path;
+}
+
 /** Shut down all InnoDB background tasks that may access
 the Global Data Dictionary, before the Global Data Dictionary
 and the rest of InnoDB have been shut down.
@@ -1666,6 +1693,12 @@ and the rest of InnoDB have been shut down.
 @see innodb_shutdown() */
 static void innodb_pre_dd_shutdown(handlerton *) {
   if (innodb_inited) {
+    /* HNSW: auto-save all dirty indexes before shutdown */
+    {
+      auto &reg = innodb_vector::HnswIndexRegistry::instance();
+      reg.save_all_dirty();
+    }
+
     srv_pre_dd_shutdown();
   }
 }
@@ -7915,6 +7948,59 @@ int ha_innobase::open(const char *name, int, uint open_flags,
 
   if (m_prebuilt->table->is_fts_aux()) {
     dict_table_close(m_prebuilt->table, false, false);
+  }
+
+  /* HNSW Vector Index: auto-load from .hnsw files on disk */
+  {
+    auto &hnsw_reg = innodb_vector::HnswIndexRegistry::instance();
+    std::string tbl(table->s->table_name.str);
+    std::string db(table->s->db.str);
+
+    for (uint i = 0; i < table->s->fields; i++) {
+      Field *fld = table->field[i];
+      if (fld->type() != MYSQL_TYPE_VECTOR) continue;
+
+      std::string col(fld->field_name);
+
+      /* Already registered? Just ensure file_path is set. */
+      if (hnsw_reg.has_index(tbl, col) || hnsw_reg.has_index(tbl, "")) {
+        if (hnsw_reg.get_file_path(tbl, col).empty()) {
+          hnsw_reg.set_file_path(tbl, col,
+                                 hnsw_make_file_path(db.c_str(), tbl.c_str(),
+                                                     col));
+        }
+        continue;
+      }
+
+      /* Try loading from .hnsw file on disk */
+      std::string hnsw_path =
+          hnsw_make_file_path(db.c_str(), tbl.c_str(), col);
+      std::string load_path;
+
+      {
+        std::ifstream f(hnsw_path, std::ios::binary);
+        if (f.good()) {
+          load_path = hnsw_path;
+        } else {
+          /* Try legacy path (no column in filename) */
+          std::string legacy =
+              hnsw_make_file_path(db.c_str(), tbl.c_str(), "");
+          std::ifstream f2(legacy, std::ios::binary);
+          if (f2.good()) {
+            load_path = legacy;
+            col = "";
+          }
+        }
+      }
+
+      if (load_path.empty()) continue;
+
+      innodb_vector::hnsw_config_t cfg;
+      auto idx = std::make_unique<innodb_vector::HnswIndex>(cfg);
+      if (idx->load_from_file(load_path.c_str())) {
+        hnsw_reg.register_loaded_index(tbl, col, std::move(idx), load_path);
+      }
+    }
   }
 
   return 0;
@@ -15770,6 +15856,24 @@ int ha_innobase::delete_table(const char *name, const dd::Table *table_def) {
 
   if (table_def != nullptr && table_def->is_persistent()) {
     innobase_register_trx(ht, thd, trx);
+  }
+
+  /* HNSW: cleanup .hnsw files for dropped table */
+  {
+    auto &reg = innodb_vector::HnswIndexRegistry::instance();
+    std::string norm(name);
+    /* name format: "./schema/table" or "schema/table" */
+    size_t last_sep = norm.find_last_of("/\\");
+    std::string tbl_name =
+        (last_sep != std::string::npos) ? norm.substr(last_sep + 1) : norm;
+
+    auto cols = reg.get_columns_for_table(tbl_name);
+    for (auto &col : cols) {
+      reg.drop_index(tbl_name, col);
+    }
+    if (reg.has_index(tbl_name, "")) {
+      reg.drop_index(tbl_name, "");
+    }
   }
 
   return (innobase_basic_ddl::delete_impl(thd, name, table_def, nullptr));

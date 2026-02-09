@@ -3,6 +3,7 @@
 
   HNSW Index Registry - Global singleton for managing table:column-to-index mappings.
   Supports multiple HNSW indexes per table (one per VECTOR column).
+  Supports auto-persistence: save on shutdown, load on table open.
 */
 
 #ifndef vec0hnsw_registry_h
@@ -51,6 +52,19 @@ class HnswIndexRegistry {
   }
 
   /**
+    Register a pre-built index loaded from file. Takes ownership.
+    @param table_name  Table name
+    @param column_name Column name (empty for legacy)
+    @param index       Pre-built HnswIndex (moved)
+    @param file_path   Path to the .hnsw file on disk
+    @return true on success, false if index already exists
+  */
+  bool register_loaded_index(const std::string& table_name,
+                             const std::string& column_name,
+                             std::unique_ptr<HnswIndex> index,
+                             const std::string& file_path);
+
+  /**
     Get an existing index for a table column.
     @param table_name  Table name
     @param column_name Column name (empty for legacy)
@@ -61,6 +75,7 @@ class HnswIndexRegistry {
 
   /**
     Drop (remove) an index for a table column.
+    Also deletes the .hnsw file from disk if path is known.
     @param table_name  Table name
     @param column_name Column name (empty for legacy)
     @return true if index was found and removed
@@ -87,6 +102,26 @@ class HnswIndexRegistry {
   std::vector<std::string> get_columns_for_table(const std::string& table_name);
 
   /**
+    Set the persistence file path for an index.
+  */
+  void set_file_path(const std::string& table_name,
+                     const std::string& column_name,
+                     const std::string& path);
+
+  /**
+    Get the persistence file path for an index.
+    @return File path, or empty string if not set or index not found
+  */
+  std::string get_file_path(const std::string& table_name,
+                            const std::string& column_name);
+
+  /**
+    Save all dirty indexes to their registered file paths.
+    @return Number of indexes successfully saved
+  */
+  size_t save_all_dirty();
+
+  /**
     Parse a metric string to enum value.
     @param metric_str  String: "l2", "cosine", "dot_product" (case-insensitive)
     @return Corresponding enum value, defaults to L2 for unknown strings
@@ -111,8 +146,14 @@ class HnswIndexRegistry {
     return table_name + ":" + column_name;
   }
 
+  /** Entry in the registry: index + persistence metadata. */
+  struct IndexEntry {
+    std::unique_ptr<HnswIndex> index;
+    std::string file_path;
+  };
+
   std::mutex mutex_;
-  std::unordered_map<std::string, std::unique_ptr<HnswIndex>> indexes_;
+  std::unordered_map<std::string, IndexEntry> indexes_;
 };
 
 }  // namespace innodb_vector
