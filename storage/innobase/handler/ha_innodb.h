@@ -104,7 +104,7 @@ class ha_innobase : public handler {
     We rely on handler::ha_table_flags() to check if such keys
     are supported. */
     assert(key_alg != HA_KEY_ALG_FULLTEXT && key_alg != HA_KEY_ALG_RTREE);
-    return key_alg == HA_KEY_ALG_BTREE;
+    return key_alg == HA_KEY_ALG_BTREE || key_alg == HA_KEY_ALG_HNSW;
   }
 
   Table_flags table_flags() const override;

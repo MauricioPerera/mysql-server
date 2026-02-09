@@ -1487,6 +1487,7 @@ CHARSET_INFO *warn_on_deprecated_user_defined_collation(
 %token<lexer.keyword> GUIDED_SYM      1237     /* MYSQL */
 %token<lexer.keyword> SETS_SYM        1238   /* SQL-1999-N */
 %token<lexer.keyword> VALIDATE_SYM    1239     /* MYSQL */
+%token<lexer.keyword> HNSW_SYM        1240     /* MYSQL - HNSW vector index */
 
 /*
   NOTE! When adding new non-standard keywords, make sure they are added to the
@@ -8085,6 +8086,7 @@ index_type:
           BTREE_SYM { $$= HA_KEY_ALG_BTREE; }
         | RTREE_SYM { $$= HA_KEY_ALG_RTREE; }
         | HASH_SYM  { $$= HA_KEY_ALG_HASH; }
+        | HNSW_SYM  { $$= HA_KEY_ALG_HNSW; }
         ;
 
 key_list:
@@ -16051,6 +16053,7 @@ ident_keywords_unambiguous:
         | GTID_ONLY_SYM
         | GUIDED_SYM
         | HASH_SYM
+        | HNSW_SYM
         | HEADER_SYM
         | HISTOGRAM_SYM
         | HISTORY_SYM

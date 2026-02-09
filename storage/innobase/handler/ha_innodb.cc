@@ -1668,9 +1668,9 @@ static int innodb_shutdown(handlerton *, ha_panic_function) {
   @param column_name Column name (empty for legacy single-index)
   @return Full path to the .hnsw file
 */
-static std::string hnsw_make_file_path(const char *db_name,
-                                        const char *table_name,
-                                        const std::string &column_name) {
+std::string hnsw_make_file_path(const char *db_name,
+                                const char *table_name,
+                                const std::string &column_name) {
   std::string path(MySQL_datadir_path);
   if (!path.empty() && path.back() != '/' && path.back() != '\\') {
     path.push_back(FN_LIBCHAR);
@@ -6677,6 +6677,10 @@ const char *ha_innobase::table_type() const { return (innobase_hton_name); }
 ulong ha_innobase::index_flags(uint key, uint, bool) const {
   if (table_share->key_info[key].algorithm == HA_KEY_ALG_FULLTEXT) {
     return (0);
+  }
+
+  if (table_share->key_info[key].algorithm == HA_KEY_ALG_HNSW) {
+    return (0);  /* HNSW indexes don't support standard index operations */
   }
 
   ulong flags = HA_READ_NEXT | HA_READ_PREV | HA_READ_ORDER | HA_READ_RANGE |
@@ -15363,6 +15367,8 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
         }
         ut_d(ut_error);
         ut_o(break);
+      case dd::Index::IA_HNSW:
+        continue;  /* HNSW indexes are valid, managed by HnswIndexRegistry */
     }
 
     my_error(ER_UNSUPPORTED_INDEX_ALGORITHM, MYF(0), i->name().c_str());

@@ -114,6 +114,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_innopart.h"
 #include "partition_info.h"
 
+/* HNSW Vector Index support */
+#include "vec0hnsw_registry.h"
+
 /** Function to convert the Instant_Type to a comparable int */
 inline uint16_t instant_type_to_int(Instant_Type type) {
   return (static_cast<typename std::underlying_type<Log_Type>::type>(type));
@@ -461,6 +464,112 @@ static bool innobase_spatial_exist(const TABLE *table) {
   }
 
   return (false);
+}
+
+/** Parse HNSW index parameters from index COMMENT string.
+Supported format: "M=16,ef=200,metric=cosine"
+@param[in]   comment           Comment string (may be NULL)
+@param[out]  M                 HNSW M parameter
+@param[out]  ef_construction   HNSW ef_construction parameter
+@param[out]  metric            Distance metric */
+static void parse_hnsw_comment(const char *comment, uint32_t *M,
+                                uint32_t *ef_construction,
+                                innodb_vector::hnsw_metric_t *metric) {
+  *M = 16;
+  *ef_construction = 200;
+  *metric = innodb_vector::hnsw_metric_t::L2;
+  if (!comment || !*comment) return;
+
+  std::string s(comment);
+  unsigned val;
+
+  if (sscanf(strstr(s.c_str(), "M=") ? strstr(s.c_str(), "M=") : "",
+             "M=%u", &val) == 1) {
+    *M = val;
+  }
+  if (sscanf(strstr(s.c_str(), "ef=") ? strstr(s.c_str(), "ef=") : "",
+             "ef=%u", &val) == 1) {
+    *ef_construction = val;
+  }
+
+  const char *m = strstr(s.c_str(), "metric=");
+  if (m) {
+    std::string metric_str(m + 7);
+    auto comma = metric_str.find(',');
+    if (comma != std::string::npos) metric_str.resize(comma);
+    *metric = innodb_vector::HnswIndexRegistry::parse_metric(metric_str);
+  }
+}
+
+/** Build HNSW index for the given key by scanning all rows in the table.
+@param[in]   handler    ha_innobase handler (for table scan)
+@param[in]   table      MySQL TABLE object
+@param[in]   key        KEY being added (must be HNSW)
+@return true on error, false on success */
+static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
+                                         const KEY *key) {
+  const char *table_name = table->s->table_name.str;
+  const char *col_name = key->key_part[0].field->field_name;
+  Field *vec_field = key->key_part[0].field;
+
+  /* Get vector dimensions from field pack length */
+  size_t dims = vec_field->pack_length() / sizeof(float);
+
+  /* Parse HNSW parameters from key comment */
+  uint32_t M, ef_construction;
+  innodb_vector::hnsw_metric_t metric;
+  parse_hnsw_comment(key->comment.str, &M, &ef_construction, &metric);
+
+  auto &registry = innodb_vector::HnswIndexRegistry::instance();
+
+  /* Register the new index */
+  if (!registry.register_index(std::string(table_name), std::string(col_name),
+                                dims, M, ef_construction, metric)) {
+    return true;  /* Already exists */
+  }
+
+  auto *hnsw_idx = registry.get_index(std::string(table_name),
+                                       std::string(col_name));
+  if (!hnsw_idx) return true;
+
+  /* Scan all rows and insert vectors */
+  int err = handler->ha_rnd_init(true);
+  if (err) {
+    registry.drop_index(std::string(table_name), std::string(col_name));
+    return true;
+  }
+
+  /* Find primary key field */
+  KEY *pk = &table->key_info[table->s->primary_key];
+  Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+
+  while (!(err = handler->ha_rnd_next(table->record[0]))) {
+    uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
+
+    String vec_buf;
+    vec_field->val_str(&vec_buf);
+    if (vec_buf.length() >= dims * sizeof(float)) {
+      const float *fdata = reinterpret_cast<const float *>(vec_buf.ptr());
+      std::vector<float> vec(fdata, fdata + dims);
+      hnsw_idx->insert(row_id, vec);
+    }
+  }
+
+  handler->ha_rnd_end();
+
+  /* Set file path for persistence */
+  extern std::string hnsw_make_file_path(const char *, const char *,
+                                          const std::string &);
+  std::string db_name(table->s->db.str);
+  std::string file_path = hnsw_make_file_path(
+      db_name.c_str(), table_name, col_name);
+  registry.set_file_path(std::string(table_name), std::string(col_name),
+                          file_path);
+
+  /* Save to disk */
+  hnsw_idx->save_to_file(file_path.c_str());
+
+  return false;
 }
 
 /** Get col in new table def of renamed column.
@@ -1450,6 +1559,107 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
     ut_ad(!m_prebuilt->table->is_temporary());
     my_error(ER_NOT_ALLOWED_COMMAND, MYF(0));
     return true;
+  }
+
+  /* ------------------------------------------------------------------
+     HNSW Vector Index Handling
+     Check if this ALTER only involves HNSW index ADD/DROP.
+     If so, handle them directly via HnswIndexRegistry and skip
+     InnoDB's prepare_impl (HNSW indexes are not B-tree indexes).
+     ------------------------------------------------------------------ */
+  {
+    bool has_hnsw_add = false;
+    bool has_non_hnsw_add = false;
+    bool has_hnsw_drop = false;
+    bool has_non_hnsw_drop = false;
+
+    /* Check new indexes being added */
+    if (ha_alter_info->handler_flags & Alter_inplace_info::ADD_INDEX) {
+      for (uint i = 0; i < ha_alter_info->index_add_count; i++) {
+        const KEY *key = &ha_alter_info->key_info_buffer[
+            ha_alter_info->index_add_buffer[i]];
+        if (key->algorithm == HA_KEY_ALG_HNSW) {
+          has_hnsw_add = true;
+        } else {
+          has_non_hnsw_add = true;
+        }
+      }
+    }
+
+    /* Check indexes being dropped */
+    if (ha_alter_info->handler_flags &
+        (Alter_inplace_info::DROP_INDEX |
+         Alter_inplace_info::DROP_UNIQUE_INDEX)) {
+      for (uint i = 0; i < ha_alter_info->index_drop_count; i++) {
+        const KEY *key = ha_alter_info->index_drop_buffer[i];
+        if (key->algorithm == HA_KEY_ALG_HNSW) {
+          has_hnsw_drop = true;
+        } else {
+          has_non_hnsw_drop = true;
+        }
+      }
+    }
+
+    /* Pure HNSW operation: no non-HNSW index changes and no other
+       significant handler flags besides ADD/DROP INDEX. */
+    if ((has_hnsw_add || has_hnsw_drop) &&
+        !has_non_hnsw_add && !has_non_hnsw_drop) {
+      Alter_inplace_info::HA_ALTER_FLAGS remaining =
+          ha_alter_info->handler_flags &
+          ~(INNOBASE_INPLACE_IGNORE |
+            Alter_inplace_info::ADD_INDEX |
+            Alter_inplace_info::DROP_INDEX |
+            Alter_inplace_info::DROP_UNIQUE_INDEX);
+
+      if (!remaining) {
+        /* Build new HNSW indexes from existing table data */
+        if (has_hnsw_add) {
+          for (uint i = 0; i < ha_alter_info->index_add_count; i++) {
+            const KEY *key = &ha_alter_info->key_info_buffer[
+                ha_alter_info->index_add_buffer[i]];
+            if (key->algorithm == HA_KEY_ALG_HNSW) {
+              if (build_hnsw_index_from_table(this, table, key)) {
+                my_error(ER_INTERNAL_ERROR, MYF(0),
+                         "Failed to build HNSW vector index");
+                return true;
+              }
+            }
+          }
+        }
+
+        /* Drop HNSW indexes */
+        if (has_hnsw_drop) {
+          auto &registry = innodb_vector::HnswIndexRegistry::instance();
+          for (uint i = 0; i < ha_alter_info->index_drop_count; i++) {
+            const KEY *key = ha_alter_info->index_drop_buffer[i];
+            if (key->algorithm == HA_KEY_ALG_HNSW) {
+              const char *tbl = table->s->table_name.str;
+              const char *col = key->key_part[0].field->field_name;
+              registry.drop_index(std::string(tbl), std::string(col));
+            }
+          }
+        }
+
+        /* Clear ADD/DROP INDEX flags so commit treats this as trivial.
+           InnoDB's inplace_alter_table_impl and commit_inplace_alter_table_impl
+           will see no INNOBASE_ALTER_DATA flags and return early. */
+        ha_alter_info->handler_flags &=
+            ~(Alter_inplace_info::ADD_INDEX |
+              Alter_inplace_info::DROP_INDEX |
+              Alter_inplace_info::DROP_UNIQUE_INDEX);
+
+        /* Handle autoinc copy if needed */
+        if (altered_table->found_next_number_field != nullptr) {
+          dd_copy_autoinc(old_dd_tab->se_private_data(),
+                          new_dd_tab->se_private_data());
+          dd_set_autoinc(new_dd_tab->se_private_data(),
+                         ha_alter_info->create_info->auto_increment_value);
+        }
+
+        /* Skip prepare_inplace_alter_table_impl - no InnoDB work needed */
+        return false;
+      }
+    }
   }
 
   if (altered_table->found_next_number_field != nullptr) {

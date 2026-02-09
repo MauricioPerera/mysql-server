@@ -322,6 +322,7 @@ static const SYMBOL symbols[] = {
     {SYM("HEADER", HEADER_SYM)},
     {SYM("HELP", HELP_SYM)},
     {SYM("HIGH_PRIORITY", HIGH_PRIORITY)},
+    {SYM("HNSW", HNSW_SYM)},
     {SYM("HISTOGRAM", HISTOGRAM_SYM)},
     {SYM("HISTORY", HISTORY_SYM)},
     {SYM("HOST", HOST_SYM)},
