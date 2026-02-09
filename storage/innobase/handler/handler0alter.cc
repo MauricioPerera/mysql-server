@@ -467,38 +467,12 @@ static bool innobase_spatial_exist(const TABLE *table) {
 }
 
 /** Parse HNSW index parameters from index COMMENT string.
-Supported format: "M=16,ef=200,metric=cosine"
-@param[in]   comment           Comment string (may be NULL)
-@param[out]  M                 HNSW M parameter
-@param[out]  ef_construction   HNSW ef_construction parameter
-@param[out]  metric            Distance metric */
+Delegates to HnswIndexRegistry::parse_comment(). */
 static void parse_hnsw_comment(const char *comment, uint32_t *M,
                                 uint32_t *ef_construction,
                                 innodb_vector::hnsw_metric_t *metric) {
-  *M = 16;
-  *ef_construction = 200;
-  *metric = innodb_vector::hnsw_metric_t::L2;
-  if (!comment || !*comment) return;
-
-  std::string s(comment);
-  unsigned val;
-
-  if (sscanf(strstr(s.c_str(), "M=") ? strstr(s.c_str(), "M=") : "",
-             "M=%u", &val) == 1) {
-    *M = val;
-  }
-  if (sscanf(strstr(s.c_str(), "ef=") ? strstr(s.c_str(), "ef=") : "",
-             "ef=%u", &val) == 1) {
-    *ef_construction = val;
-  }
-
-  const char *m = strstr(s.c_str(), "metric=");
-  if (m) {
-    std::string metric_str(m + 7);
-    auto comma = metric_str.find(',');
-    if (comma != std::string::npos) metric_str.resize(comma);
-    *metric = innodb_vector::HnswIndexRegistry::parse_metric(metric_str);
-  }
+  innodb_vector::HnswIndexRegistry::parse_comment(comment, M, ef_construction,
+                                                    metric);
 }
 
 /** Build HNSW index for the given key by scanning all rows in the table.

@@ -7954,27 +7954,82 @@ int ha_innobase::open(const char *name, int, uint open_flags,
     dict_table_close(m_prebuilt->table, false, false);
   }
 
-  /* HNSW Vector Index: auto-load from .hnsw files on disk */
+  /* HNSW Vector Index: DD-aware auto-load on table open.
+     Pass 1: Load indexes declared in DD (CREATE INDEX ... USING HNSW).
+     Pass 2: Legacy load for SQL-function-created indexes (.hnsw files). */
   {
     auto &hnsw_reg = innodb_vector::HnswIndexRegistry::instance();
     std::string tbl(table->s->table_name.str);
     std::string db(table->s->db.str);
 
-    for (uint i = 0; i < table->s->fields; i++) {
-      Field *fld = table->field[i];
-      if (fld->type() != MYSQL_TYPE_VECTOR) continue;
+    /* Track which VECTOR columns have DD-declared HNSW indexes */
+    bool dd_handled[MAX_KEY] = {};
+    uint dd_handled_count = 0;
 
-      std::string col(fld->field_name);
+    /* Pass 1: Load indexes from DD metadata (key_info with HA_KEY_ALG_HNSW) */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->s->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+      if (key->user_defined_key_parts < 1) continue;
 
-      /* Already registered? Just ensure file_path is set. */
-      if (hnsw_reg.has_index(tbl, col) || hnsw_reg.has_index(tbl, "")) {
+      std::string col(key->key_part[0].field->field_name);
+
+      /* Mark this column's field index as handled */
+      for (uint fi = 0; fi < table->s->fields; fi++) {
+        if (table->field[fi] == key->key_part[0].field) {
+          if (fi < MAX_KEY) dd_handled[fi] = true;
+          break;
+        }
+      }
+      dd_handled_count++;
+
+      /* Already in registry? Just ensure file_path is set. */
+      if (hnsw_reg.has_index(tbl, col)) {
         if (hnsw_reg.get_file_path(tbl, col).empty()) {
-          hnsw_reg.set_file_path(tbl, col,
-                                 hnsw_make_file_path(db.c_str(), tbl.c_str(),
-                                                     col));
+          hnsw_reg.set_file_path(
+              tbl, col,
+              hnsw_make_file_path(db.c_str(), tbl.c_str(), col));
         }
         continue;
       }
+
+      /* Try loading from .hnsw file on disk */
+      std::string hnsw_path =
+          hnsw_make_file_path(db.c_str(), tbl.c_str(), col);
+      innodb_vector::hnsw_config_t cfg;
+      auto idx = std::make_unique<innodb_vector::HnswIndex>(cfg);
+
+      if (idx->load_from_file(hnsw_path.c_str())) {
+        /* File found: config restored from file header */
+        hnsw_reg.register_loaded_index(tbl, col, std::move(idx), hnsw_path);
+      } else {
+        /* .hnsw file missing or corrupt: register empty index from COMMENT.
+           Future INSERTs will populate it via write_row hook. */
+        Field *vec_field = key->key_part[0].field;
+        size_t dims = vec_field->pack_length() / sizeof(float);
+
+        uint32_t M = 16, ef = 200;
+        innodb_vector::hnsw_metric_t metric = innodb_vector::hnsw_metric_t::L2;
+        if (key->comment.str) {
+          innodb_vector::HnswIndexRegistry::parse_comment(
+              key->comment.str, &M, &ef, &metric);
+        }
+
+        hnsw_reg.register_index(tbl, col, dims, M, ef, metric);
+        hnsw_reg.set_file_path(tbl, col, hnsw_path);
+      }
+    }
+
+    /* Pass 2: Legacy auto-load for SQL-function-created indexes
+       (.hnsw files on disk without DD entries) */
+    for (uint i = 0; i < table->s->fields; i++) {
+      Field *fld = table->field[i];
+      if (fld->type() != MYSQL_TYPE_VECTOR) continue;
+      if (i < MAX_KEY && dd_handled[i]) continue; /* Already handled */
+
+      std::string col(fld->field_name);
+      if (hnsw_reg.has_index(tbl, col) || hnsw_reg.has_index(tbl, ""))
+        continue;
 
       /* Try loading from .hnsw file on disk */
       std::string hnsw_path =

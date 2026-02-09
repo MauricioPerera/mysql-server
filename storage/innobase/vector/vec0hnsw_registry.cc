@@ -191,4 +191,34 @@ const char* HnswIndexRegistry::metric_to_string(hnsw_metric_t metric) {
   }
 }
 
+void HnswIndexRegistry::parse_comment(const char *comment,
+                                       uint32_t *M, uint32_t *ef_construction,
+                                       hnsw_metric_t *metric) {
+  *M = 16;
+  *ef_construction = 200;
+  *metric = hnsw_metric_t::L2;
+  if (!comment || !*comment) return;
+
+  std::string s(comment);
+  unsigned val;
+
+  const char *m_ptr = strstr(s.c_str(), "M=");
+  if (m_ptr && sscanf(m_ptr, "M=%u", &val) == 1) {
+    *M = val;
+  }
+
+  const char *ef_ptr = strstr(s.c_str(), "ef=");
+  if (ef_ptr && sscanf(ef_ptr, "ef=%u", &val) == 1) {
+    *ef_construction = val;
+  }
+
+  const char *metric_ptr = strstr(s.c_str(), "metric=");
+  if (metric_ptr) {
+    std::string metric_str(metric_ptr + 7);
+    auto comma = metric_str.find(',');
+    if (comma != std::string::npos) metric_str.resize(comma);
+    *metric = parse_metric(metric_str);
+  }
+}
+
 }  // namespace innodb_vector

@@ -133,6 +133,18 @@ class HnswIndexRegistry {
   */
   static const char* metric_to_string(hnsw_metric_t metric);
 
+  /**
+    Parse HNSW parameters from an index COMMENT string.
+    Supported format: "M=16,ef=200,metric=cosine"
+    @param[in]   comment           Comment string (may be NULL)
+    @param[out]  M                 HNSW M parameter (default 16)
+    @param[out]  ef_construction   HNSW ef_construction parameter (default 200)
+    @param[out]  metric            Distance metric (default L2)
+  */
+  static void parse_comment(const char *comment,
+                            uint32_t *M, uint32_t *ef_construction,
+                            hnsw_metric_t *metric);
+
  private:
   HnswIndexRegistry() = default;
   ~HnswIndexRegistry() = default;
