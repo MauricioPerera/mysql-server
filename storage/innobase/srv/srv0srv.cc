@@ -98,6 +98,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0crc32.h"
 #endif /* !UNIV_HOTBACKUP */
 #include "ut0mem.h"
+#include "vec0hnsw_registry.h"
 
 #ifdef UNIV_HOTBACKUP
 #include "page0size.h"
@@ -649,6 +650,8 @@ current_time % 60 == 0 and no tasks will be performed when
 current_time % 5 != 0. */
 
 constexpr std::chrono::seconds SRV_MASTER_DICT_LRU_INTERVAL{47};
+
+ulong srv_hnsw_flush_interval = 60;
 
 /** Acquire the system_mutex. */
 #define srv_sys_mutex_enter()     \
@@ -2311,6 +2314,18 @@ static void srv_master_do_active_tasks(void) {
       MONITOR_INC_VALUE(MONITOR_SRV_DICT_LRU_EVICT_COUNT, n_evicted);
     }
     MONITOR_INC_TIME(MONITOR_SRV_DICT_LRU_MICROSECOND, counter_time);
+  }
+
+  /* HNSW Vector Index: periodic flush of dirty indexes to disk */
+  if (srv_hnsw_flush_interval > 0) {
+    static std::chrono::steady_clock::time_point last_hnsw_flush;
+    if (cur_time - last_hnsw_flush >
+        std::chrono::seconds(srv_hnsw_flush_interval)) {
+      last_hnsw_flush = cur_time;
+      srv_main_thread_op_info = "flushing HNSW vector indexes";
+      auto &reg = innodb_vector::HnswIndexRegistry::instance();
+      reg.save_all_dirty();
+    }
   }
 }
 

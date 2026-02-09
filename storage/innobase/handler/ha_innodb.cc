@@ -22681,6 +22681,16 @@ static MYSQL_SYSVAR_ULONG(sync_array_size, srv_sync_array_size,
                           1024, 0);   /* Maximum value */
 
 static MYSQL_SYSVAR_ULONG(
+    hnsw_flush_interval, srv_hnsw_flush_interval, PLUGIN_VAR_RQCMDARG,
+    "Interval in seconds for flushing dirty HNSW vector indexes to disk. "
+    "Reduces data loss window on crash. 0 = disabled.",
+    nullptr, nullptr,
+    60,    /* Default: 60 seconds */
+    0,     /* Minimum: 0 (disabled) */
+    3600,  /* Maximum: 1 hour */
+    0);
+
+static MYSQL_SYSVAR_ULONG(
     fast_shutdown, srv_fast_shutdown, PLUGIN_VAR_OPCMDARG,
     "Speeds up the shutdown process of the InnoDB storage engine. Possible"
     " values are 0, 1 (faster) or 2 (fastest - crash-like).",
@@ -23928,6 +23938,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(ft_num_word_optimize),
     MYSQL_SYSVAR(ft_sort_pll_degree),
     MYSQL_SYSVAR(force_load_corrupted),
+    MYSQL_SYSVAR(hnsw_flush_interval),
     MYSQL_SYSVAR(lock_wait_timeout),
     MYSQL_SYSVAR(deadlock_detect),
     MYSQL_SYSVAR(page_size),
