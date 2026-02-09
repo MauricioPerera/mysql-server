@@ -5480,7 +5480,8 @@ static int innodb_init(void *p) {
                          HTON_CAN_RECREATE | HTON_SUPPORTS_SECONDARY_ENGINE |
                          HTON_SUPPORTS_TABLE_ENCRYPTION |
                          HTON_SUPPORTS_GENERATED_INVISIBLE_PK |
-                         HTON_SUPPORTS_BULK_LOAD | HTON_SUPPORTS_SQL_FK;
+                         HTON_SUPPORTS_BULK_LOAD | HTON_SUPPORTS_SQL_FK |
+                         HTON_SUPPORTS_DISTANCE_SCAN;
   // TODO(WL9440): to be enabled when distance scan is implemented in innodb.
   //| HTON_SUPPORTS_DISTANCE_SCAN;
 
@@ -6680,7 +6681,7 @@ ulong ha_innobase::index_flags(uint key, uint, bool) const {
   }
 
   if (table_share->key_info[key].algorithm == HA_KEY_ALG_HNSW) {
-    return (0);  /* HNSW indexes don't support standard index operations */
+    return HA_READ_NEXT;  /* Support forward iteration for distance scan */
   }
 
   ulong flags = HA_READ_NEXT | HA_READ_PREV | HA_READ_ORDER | HA_READ_RANGE |
@@ -10634,6 +10635,18 @@ int ha_innobase::index_init(uint keynr, /*!< in: key (index) number */
 {
   DBUG_TRACE;
 
+  m_hnsw_scan.reset();
+
+  /* HNSW indexes are in-memory only (no InnoDB B-tree dict_index_t).
+  Set active_index but skip change_active_index() which would fail
+  trying to look up a non-existent InnoDB index. The actual HNSW
+  search + clustered index switch happens in index_read(). */
+  if (keynr < table_share->keys &&
+      table_share->key_info[keynr].algorithm == HA_KEY_ALG_HNSW) {
+    active_index = keynr;
+    return 0;
+  }
+
   return change_active_index(keynr);
 }
 
@@ -10642,6 +10655,22 @@ int ha_innobase::index_init(uint keynr, /*!< in: key (index) number */
 
 int ha_innobase::index_end(void) {
   DBUG_TRACE;
+
+  /* Clean up HNSW scan state. If an HNSW scan was active, m_prebuilt->index
+  points to the clustered index (switched during hnsw_index_read), so the
+  last_sel_cur cleanup below is safe. If no HNSW scan was active and
+  index_init was for an HNSW key, m_prebuilt->index was never set, so
+  skip the last_sel_cur cleanup. */
+  if (m_hnsw_scan.active) {
+    m_hnsw_scan.reset();
+  } else if (active_index < table_share->keys &&
+             table_share->key_info[active_index].algorithm ==
+                 HA_KEY_ALG_HNSW) {
+    active_index = MAX_KEY;
+    in_range_check_pushed_down = false;
+    m_ds_mrr.dsmrr_close();
+    return 0;
+  }
 
   if (m_prebuilt->index->last_sel_cur) {
     m_prebuilt->index->last_sel_cur->release();
@@ -10746,6 +10775,82 @@ start of a new SQL statement. Since the query id can theoretically
 overwrap, we use this test only as a secondary way of determining the
 start of a new SQL statement. */
 
+/** Read a row by PK from the HNSW scan result cache.
+Switches to clustered index, builds PK key, and does a standard lookup.
+@return 0 or error number */
+int ha_innobase::hnsw_pk_lookup(uchar *buf) {
+  if (m_hnsw_scan.current_pos >= m_hnsw_scan.results.size()) {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  uint64_t pk_val = m_hnsw_scan.results[m_hnsw_scan.current_pos].first;
+
+  uint pk_keynr = table->s->primary_key;
+  KEY *pk_key_info = &table->key_info[pk_keynr];
+  Field *pk_field = pk_key_info->key_part[0].field;
+
+  /* Store PK value into the field's location in record[0] */
+  pk_field->store(static_cast<longlong>(pk_val), true);
+
+  /* Build key from record buffer */
+  uchar pk_key_buf[MAX_KEY_LENGTH];
+  key_copy(pk_key_buf, table->record[0], pk_key_info,
+           pk_key_info->key_length);
+
+  /* Do standard PK lookup via clustered index.
+  This calls index_read() again but with HA_READ_KEY_EXACT on the
+  clustered index, so it takes the normal B-tree path (no recursion
+  into HNSW). */
+  return index_read(buf, pk_key_buf, pk_key_info->key_length,
+                    HA_READ_KEY_EXACT);
+}
+
+/** Execute HNSW vector search and read first result.
+@param[out]  buf       Buffer for the returned row
+@param[in]   key_ptr   Query vector bytes (raw floats)
+@param[in]   key_len   Length of query vector in bytes
+@return 0 or error number */
+int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
+                                  uint key_len) {
+  /* Get table and column names for HNSW index lookup */
+  const char *tbl = table->s->table_name.str;
+  const char *col =
+      table_share->key_info[active_index].key_part[0].field->field_name;
+
+  auto &reg = innodb_vector::HnswIndexRegistry::instance();
+  auto *hnsw = reg.get_index(tbl, col);
+  if (!hnsw) return HA_ERR_END_OF_FILE;
+
+  /* Build query vector from raw float bytes */
+  uint dims = key_len / sizeof(float);
+  std::vector<float> query(reinterpret_cast<const float *>(key_ptr),
+                           reinterpret_cast<const float *>(key_ptr) + dims);
+
+  /* Execute HNSW KNN search.
+  Use ef_search=200 for good recall. The LIMIT clause will stop
+  reading after k rows anyway. */
+  auto results = hnsw->search(query, 200, 0);
+
+  /* Cache results for iteration */
+  m_hnsw_scan.results.clear();
+  m_hnsw_scan.results.reserve(results.size());
+  for (auto &r : results) {
+    m_hnsw_scan.results.push_back({r.id, r.distance});
+  }
+  m_hnsw_scan.current_pos = 0;
+  m_hnsw_scan.active = true;
+
+  if (m_hnsw_scan.results.empty()) return HA_ERR_END_OF_FILE;
+
+  /* Switch to clustered (PK) index for row lookups.
+  HNSW indexes have no InnoDB B-tree, so we need the clustered index
+  to actually read row data. */
+  int err = change_active_index(table->s->primary_key);
+  if (err) return err;
+
+  return hnsw_pk_lookup(buf);
+}
+
 /** Positions an index cursor to the index specified in the handle. Fetches the
  row if any.
  @return 0, HA_ERR_KEY_NOT_FOUND, or error number */
@@ -10767,6 +10872,15 @@ int ha_innobase::index_read(
 {
   DBUG_TRACE;
   DEBUG_SYNC_C("ha_innobase_index_read_begin");
+
+  /* HNSW Vector Index: intercept nearest-neighbor reads.
+  When the optimizer requests HA_READ_NEAREST_NEIGHBOR on an HNSW index,
+  execute the HNSW search and return results via clustered index lookups. */
+  if (find_flag == HA_READ_NEAREST_NEIGHBOR &&
+      active_index < table_share->keys &&
+      table_share->key_info[active_index].algorithm == HA_KEY_ALG_HNSW) {
+    return hnsw_index_read(buf, key_ptr, key_len);
+  }
 
   ut_a(m_prebuilt->trx == thd_to_trx(m_user_thd));
   ut_ad(key_len != 0 || find_flag != HA_READ_KEY_EXACT);
@@ -11108,6 +11222,15 @@ int ha_innobase::general_fetch(
                      ROW_SEL_EXACT_PREFIX */
 {
   DBUG_TRACE;
+
+  /* HNSW Vector Index: return next cached search result */
+  if (m_hnsw_scan.active) {
+    m_hnsw_scan.current_pos++;
+    if (m_hnsw_scan.current_pos >= m_hnsw_scan.results.size()) {
+      return HA_ERR_END_OF_FILE;
+    }
+    return hnsw_pk_lookup(buf);
+  }
 
   const trx_t *trx = m_prebuilt->trx;
 

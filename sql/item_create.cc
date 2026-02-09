@@ -1667,6 +1667,7 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"INNER_PRODUCT", SQL_FN(Item_func_dot_product, 2)},
     {"L2_DISTANCE", SQL_FN(Item_func_l2_distance, 2)},
     {"EUCLIDEAN_DISTANCE", SQL_FN(Item_func_l2_distance, 2)},
+    {"VECTOR_DISTANCE", SQL_FN_V_LIST(Item_func_vector_distance, 2, 3)},
     {"UCASE", SQL_FN(Item_func_upper, 1)},
     {"UNCOMPRESS", SQL_FN(Item_func_uncompress, 1)},
     {"UNCOMPRESSED_LENGTH", SQL_FN(Item_func_uncompressed_length, 1)},

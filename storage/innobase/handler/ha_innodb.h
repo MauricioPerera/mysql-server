@@ -32,6 +32,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <assert.h>
 #include <sys/types.h>
+#include <utility>
+#include <vector>
 #include "create_field.h"
 #include "field.h"
 #include "handler.h"
@@ -623,6 +625,17 @@ class ha_innobase : public handler {
 
   int change_active_index(uint keynr);
 
+  /** Execute HNSW vector search and read first result row.
+  @param[out]  buf       Buffer for the returned row
+  @param[in]   key_ptr   Query vector bytes (raw floats)
+  @param[in]   key_len   Length of query vector in bytes
+  @return 0 or error number */
+  int hnsw_index_read(uchar *buf, const uchar *key_ptr, uint key_len);
+
+  /** Read a row by PK from the HNSW scan result cache.
+  @return 0 or error number */
+  int hnsw_pk_lookup(uchar *buf);
+
   dberr_t innobase_lock_autoinc();
 
   dberr_t innobase_set_max_autoinc(ulonglong auto_inc);
@@ -786,6 +799,20 @@ class ha_innobase : public handler {
   /** this is set to 1 when we are starting a table scan but have
   not yet fetched any row, else false */
   bool m_start_of_scan;
+
+  /** HNSW vector search cached results for INDEX_DISTANCE_SCAN.
+  When active, index_read/index_next return rows from cached HNSW
+  search results via clustered index PK lookups. */
+  struct hnsw_scan_state_t {
+    bool active = false;
+    std::vector<std::pair<uint64_t, double>> results;  // (pk, distance)
+    size_t current_pos = 0;
+    void reset() {
+      active = false;
+      results.clear();
+      current_pos = 0;
+    }
+  } m_hnsw_scan;
 
   /*!< match mode of the latest search: ROW_SEL_EXACT,
   ROW_SEL_EXACT_PREFIX, or undefined */

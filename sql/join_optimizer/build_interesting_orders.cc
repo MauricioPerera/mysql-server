@@ -499,6 +499,68 @@ static void CollectOrderingsFromSpatialIndex(
   // The use of index is currently not supported for this case.
 }
 
+/**
+  Collect orderings from HNSW vector indexes.
+  Detects ORDER BY VECTOR_DISTANCE(column, query_vec, metric) ASC patterns
+  where column has an HNSW index, and registers them as potential distance
+  scan orderings so the optimizer can propose INDEX_DISTANCE_SCAN paths.
+
+  Reuses SpatialDistanceScanInfo: stores a pointer to the query vector Item
+  in the coordinates field (the pointer fits in 8 bytes). The actual vector
+  bytes are extracted later in ProposeDistanceIndexScan.
+*/
+static void CollectOrderingsFromVectorIndex(
+    THD *thd, TABLE *table, int key_idx, LogicalOrderings *orderings,
+    Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes) {
+  if (table->key_info[key_idx].algorithm != HA_KEY_ALG_HNSW) return;
+  if (!ha_check_storage_engine_flag(table->file->ht,
+                                    HTON_SUPPORTS_DISTANCE_SCAN))
+    return;
+
+  const KEY_PART_INFO &key_part = table->key_info[key_idx].key_part[0];
+  Item *col_item = new Item_field(key_part.field);
+
+  for (int i = 1; i < orderings->num_items(); ++i) {
+    Item *const current_item = orderings->item(i);
+    if (current_item->type() != Item::FUNC_ITEM) continue;
+
+    auto *item_func = down_cast<Item_func *>(current_item);
+    if (item_func->functype() != Item_func::VECTOR_DISTANCE_FUNC) continue;
+    if (item_func->arg_count < 2) continue;
+
+    Item *arg0 = item_func->arguments()[0];
+    Item *arg1 = item_func->arguments()[1];
+    Item *query_item = nullptr;
+
+    /* One argument must match the indexed VECTOR column, the other
+    must be a constant (the query vector literal). */
+    if (col_item->eq(arg0) && arg1->const_item())
+      query_item = arg1;
+    else if (col_item->eq(arg1) && arg0->const_item())
+      query_item = arg0;
+    else
+      continue;
+
+    SpatialDistanceScanInfo index_info;
+    index_info.table = table;
+    index_info.key_idx = key_idx;
+
+    /* Store pointer to query vector Item in coordinates field.
+    ProposeDistanceIndexScan will extract the actual bytes. */
+    memset(index_info.coordinates, 0, sizeof(index_info.coordinates));
+    *reinterpret_cast<Item **>(index_info.coordinates) = query_item;
+
+    OrderElement order_element{i, ORDER_ASC};
+    Ordering::Elements elements{&order_element, 1};
+
+    index_info.forward_order = orderings->AddOrdering(
+        thd, Ordering(elements, Ordering::Kind::kOrder),
+        /*interesting=*/false,
+        /*used_at_end=*/true, /*homogenize_tables=*/0);
+    spatial_indexes->push_back(index_info);
+  }
+}
+
 void BuildInterestingOrders(
     THD *thd, JoinHypergraph *graph, Query_block *query_block,
     LogicalOrderings *orderings,
@@ -680,6 +742,10 @@ void BuildInterestingOrders(
       if (Overlaps(table->key_info[key_idx].flags, HA_SPATIAL)) {
         CollectOrderingsFromSpatialIndex(thd, table, key_idx, orderings,
                                          spatial_indexes);
+      }
+      if (table->key_info[key_idx].algorithm == HA_KEY_ALG_HNSW) {
+        CollectOrderingsFromVectorIndex(thd, table, key_idx, orderings,
+                                        spatial_indexes);
       }
       ActiveIndexInfo index_info;
       index_info.table = table;

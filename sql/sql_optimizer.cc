@@ -1762,6 +1762,24 @@ static Item_func_match *test_if_ft_index_order(ORDER *order) {
 }
 
 /**
+  Test if ORDER BY contains a single VECTOR_DISTANCE(...) ASC expression.
+
+  @param order  Linked list of ORDER BY expressions.
+
+  @retval Pointer to VECTOR_DISTANCE function if order is
+          'ORDER BY VECTOR_DISTANCE(...) ASC'
+  @retval NULL otherwise
+*/
+static Item_func_vector_distance *test_if_vector_distance_order(
+    ORDER *order) {
+  if (order && order->next == nullptr && order->direction == ORDER_ASC &&
+      is_function_of_type(*order->item, Item_func::VECTOR_DISTANCE_FUNC))
+    return down_cast<Item_func_vector_distance *>(*order->item);
+
+  return nullptr;
+}
+
+/**
   Test if this is a prefix index.
 
   @param   table     table
@@ -2296,6 +2314,27 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
         ft_func->score_from_index_scan = true;
         table->file->ft_handler = ft_func->ft_handler;
         return true;
+      }
+    }
+  }
+
+  /* Check if ORDER BY VECTOR_DISTANCE(...) LIMIT k can use an HNSW index */
+  {
+    auto *vd_func = test_if_vector_distance_order(order.order);
+    if (vd_func && select_limit != HA_POS_ERROR) {
+      for (uint k = 0; k < table->s->keys; k++) {
+        if (table->s->key_info[k].algorithm != HA_KEY_ALG_HNSW) continue;
+        Field *idx_field = table->s->key_info[k].key_part[0].field;
+        Item *arg0 = vd_func->arguments()[0];
+        Item *arg1 = vd_func->arguments()[1];
+        bool match = false;
+        if (arg0->type() == Item::FIELD_ITEM &&
+            down_cast<Item_field *>(arg0)->field == idx_field)
+          match = true;
+        else if (arg1->type() == Item::FIELD_ITEM &&
+                 down_cast<Item_field *>(arg1)->field == idx_field)
+          match = true;
+        if (match) return true; /* Skip sort — HNSW returns ordered by dist */
       }
     }
   }

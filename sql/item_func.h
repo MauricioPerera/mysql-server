@@ -237,6 +237,7 @@ class Item_func : public Item_result_field {
     SP_EQUALS_FUNC,
     SP_DISJOINT_FUNC,
     SP_DISTANCE_FUNC,
+    VECTOR_DISTANCE_FUNC,
     SP_INTERSECTS_FUNC,
     SP_TOUCHES_FUNC,
     SP_CROSSES_FUNC,
@@ -4288,6 +4289,7 @@ class Item_func_vector_distance : public Item_real_func {
   double val_real() override;
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "vector_distance"; }
+  enum Functype functype() const override { return VECTOR_DISTANCE_FUNC; }
 };
 
 /// Checks if "item" contains a function of the specified type.
