@@ -1925,7 +1925,7 @@ class Item_func_hnsw_create_index : public Item_str_func {
  private:
   String result_buffer;
  public:
-  Item_func_hnsw_create_index(THD *thd, const POS &pos, PT_item_list *list)
+  Item_func_hnsw_create_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
       : Item_str_func(pos, list) {}
   String *val_str(String *str) override;
   bool resolve_type(THD *thd) override;
@@ -1937,7 +1937,7 @@ class Item_func_hnsw_drop_index : public Item_str_func {
  private:
   String result_buffer;
  public:
-  Item_func_hnsw_drop_index(THD *thd, const POS &pos, PT_item_list *list)
+  Item_func_hnsw_drop_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
       : Item_str_func(pos, list) {}
   String *val_str(String *str) override;
   bool resolve_type(THD *thd) override;
@@ -1949,7 +1949,7 @@ class Item_func_hnsw_save_index : public Item_str_func {
  private:
   String result_buffer;
  public:
-  Item_func_hnsw_save_index(THD *thd, const POS &pos, PT_item_list *list)
+  Item_func_hnsw_save_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
       : Item_str_func(pos, list) {}
   String *val_str(String *str) override;
   bool resolve_type(THD *thd) override;
@@ -1961,7 +1961,7 @@ class Item_func_hnsw_load_index : public Item_str_func {
  private:
   String result_buffer;
  public:
-  Item_func_hnsw_load_index(THD *thd, const POS &pos, PT_item_list *list)
+  Item_func_hnsw_load_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
       : Item_str_func(pos, list) {}
   String *val_str(String *str) override;
   bool resolve_type(THD *thd) override;
@@ -1973,7 +1973,7 @@ class Item_func_hnsw_info : public Item_str_func {
  private:
   String result_buffer;
  public:
-  Item_func_hnsw_info(THD *thd, const POS &pos, PT_item_list *list)
+  Item_func_hnsw_info(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
       : Item_str_func(pos, list) {}
   String *val_str(String *str) override;
   bool resolve_type(THD *thd) override;
