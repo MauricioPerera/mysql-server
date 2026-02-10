@@ -3158,6 +3158,9 @@ inline void dd_copy_from_table_share(THD *thd, dict_table_t *table,
   for (uint i = 0; i < table_share->keys; i++) {
     const KEY *key_info = &table_share->key_info[i];
 
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (key_info->algorithm == HA_KEY_ALG_HNSW) continue;
+
     ut_ad(index != nullptr);
 
     if (key_info->flags & HA_USES_COMMENT && key_info->comment.str != nullptr) {
