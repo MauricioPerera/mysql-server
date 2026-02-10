@@ -54,7 +54,7 @@ bool Item_func_hnsw_create_index::resolve_type(THD *thd) {
   return false;
 }
 
-String *Item_func_hnsw_create_index::val_str(String *str) {
+String *Item_func_hnsw_create_index::val_str(String *) {
   assert(fixed);
 
   String table_buf;
@@ -158,7 +158,7 @@ bool Item_func_hnsw_drop_index::resolve_type(THD *thd) {
   return false;
 }
 
-String *Item_func_hnsw_drop_index::val_str(String *str) {
+String *Item_func_hnsw_drop_index::val_str(String *) {
   assert(fixed);
 
   String table_buf;
@@ -204,7 +204,7 @@ bool Item_func_hnsw_save_index::resolve_type(THD *thd) {
   return false;
 }
 
-String *Item_func_hnsw_save_index::val_str(String *str) {
+String *Item_func_hnsw_save_index::val_str(String *) {
   assert(fixed);
 
   String table_buf;
@@ -264,7 +264,7 @@ bool Item_func_hnsw_load_index::resolve_type(THD *thd) {
   return false;
 }
 
-String *Item_func_hnsw_load_index::val_str(String *str) {
+String *Item_func_hnsw_load_index::val_str(String *) {
   assert(fixed);
 
   String table_buf;
@@ -324,7 +324,7 @@ bool Item_func_hnsw_info::resolve_type(THD *thd) {
   return false;
 }
 
-String *Item_func_hnsw_info::val_str(String *str) {
+String *Item_func_hnsw_info::val_str(String *) {
   assert(fixed);
 
   String table_buf;
