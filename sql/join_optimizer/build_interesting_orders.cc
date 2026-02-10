@@ -543,6 +543,20 @@ static void CollectOrderingsFromVectorIndex(
 
     fprintf(stderr, "HNSW_DEBUG: arg0 type=%d const=%d, arg1 type=%d const=%d\n",
             arg0->type(), arg0->const_item(), arg1->type(), arg1->const_item());
+    {
+      auto *ci = down_cast<Item_field *>(col_item);
+      fprintf(stderr, "HNSW_DEBUG: col_item fixed=%d field=%p collation=%s\n",
+              ci->fixed, ci->field, ci->collation.collation->m_coll_name);
+      if (arg0->type() == Item::FIELD_ITEM) {
+        auto *a0 = down_cast<Item_field *>(arg0->real_item());
+        fprintf(stderr, "HNSW_DEBUG: arg0 fixed=%d field=%p collation=%s base_field=%p\n",
+                a0->fixed, a0->field,
+                a0->collation.collation->m_coll_name,
+                a0->base_item_field()->field);
+        fprintf(stderr, "HNSW_DEBUG: col base_field=%p\n",
+                ci->base_item_field()->field);
+      }
+    }
     fprintf(stderr, "HNSW_DEBUG: col_item->eq(arg0)=%d col_item->eq(arg1)=%d\n",
             col_item->eq(arg0), col_item->eq(arg1));
 
