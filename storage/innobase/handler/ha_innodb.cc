@@ -10657,12 +10657,14 @@ int ha_innobase::index_init(uint keynr, /*!< in: key (index) number */
   m_hnsw_scan.reset();
 
   /* HNSW indexes are in-memory only (no InnoDB B-tree dict_index_t).
-  Set active_index but skip change_active_index() which would fail
-  trying to look up a non-existent InnoDB index. The actual HNSW
-  search + clustered index switch happens in index_read(). */
+  Set active_index and point m_prebuilt->index to the clustered index
+  so PK lookups work during the HNSW scan. Skip change_active_index()
+  which would fail trying to look up a non-existent InnoDB index. */
   if (keynr < table_share->keys &&
       table_share->key_info[keynr].algorithm == HA_KEY_ALG_HNSW) {
     active_index = keynr;
+    m_prebuilt->index = m_prebuilt->table->first_index();
+    m_prebuilt->index_usable = true;
     return 0;
   }
 
