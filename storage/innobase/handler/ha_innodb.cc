@@ -18180,6 +18180,13 @@ void ha_innobase::info_low_key(uint flag, const dict_table_t *ib_table) {
 
   for (uint i = 0; i < table->s->keys; i++) {
     DEBUG_SYNC_C("begin_of_index_stats_read");
+
+    /* HNSW indexes have no InnoDB B-tree representation — skip stats. */
+    if (table->key_info[i].algorithm == HA_KEY_ALG_HNSW) {
+      table->key_info[i].set_in_memory_estimate(IN_MEMORY_ESTIMATE_UNKNOWN);
+      continue;
+    }
+
     /* We could get index quickly through internal index mapping with the index
     translation table. The identity of index (match up index name with that of
     table->key_info[i]) is already verified in innobase_get_index(). */
