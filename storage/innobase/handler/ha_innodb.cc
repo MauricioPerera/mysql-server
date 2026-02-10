@@ -10827,9 +10827,22 @@ int ha_innobase::hnsw_pk_lookup(uchar *buf) {
   /* Do standard PK lookup via clustered index.
   This calls index_read() again but with HA_READ_KEY_EXACT on the
   clustered index, so it takes the normal B-tree path (no recursion
-  into HNSW). */
-  return index_read(buf, pk_key_buf, pk_key_info->key_length,
-                    HA_READ_KEY_EXACT);
+  into HNSW).
+
+  The executor may have set a record buffer on this handler for
+  multi-row prefetching.  The PK lookup will call build_template()
+  which sets templ_contains_blob (table has a VECTOR/BLOB column),
+  making can_prefetch_records() false.  Clear the buffer temporarily
+  so the ut_ad(can_prefetch_records() || record_buffer == nullptr)
+  assertion in row_search_mvcc() holds. */
+  Record_buffer *saved_rec_buf = ha_get_record_buffer();
+  ha_set_record_buffer(nullptr);
+
+  int err = index_read(buf, pk_key_buf, pk_key_info->key_length,
+                       HA_READ_KEY_EXACT);
+
+  ha_set_record_buffer(saved_rec_buf);
+  return err;
 }
 
 /** Execute HNSW vector search and read first result.
