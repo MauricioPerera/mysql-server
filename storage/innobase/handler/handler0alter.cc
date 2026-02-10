@@ -508,10 +508,13 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
 
   auto &registry = innodb_vector::HnswIndexRegistry::instance();
 
-  /* Register the new index */
+  /* Drop any stale entry from table open, then register fresh */
+  if (registry.has_index(std::string(table_name), std::string(col_name))) {
+    registry.drop_index(std::string(table_name), std::string(col_name));
+  }
   if (!registry.register_index(std::string(table_name), std::string(col_name),
                                 dims, M, ef_construction, metric)) {
-    ib::error() << "HNSW build: register_index failed (already exists?)";
+    ib::error() << "HNSW build: register_index failed";
     return true;
   }
 
