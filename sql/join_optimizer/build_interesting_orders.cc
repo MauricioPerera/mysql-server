@@ -513,18 +513,31 @@ static void CollectOrderingsFromVectorIndex(
     THD *thd, TABLE *table, int key_idx, LogicalOrderings *orderings,
     Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes) {
   if (table->key_info[key_idx].algorithm != HA_KEY_ALG_HNSW) return;
+  fprintf(stderr, "HNSW_DEBUG: CollectOrderingsFromVectorIndex entered key=%d\n",
+          key_idx);
   if (!ha_check_storage_engine_flag(table->file->ht,
-                                    HTON_SUPPORTS_DISTANCE_SCAN))
+                                    HTON_SUPPORTS_DISTANCE_SCAN)) {
+    fprintf(stderr, "HNSW_DEBUG: HTON_SUPPORTS_DISTANCE_SCAN not set!\n");
     return;
+  }
 
   const KEY_PART_INFO &key_part = table->key_info[key_idx].key_part[0];
+  fprintf(stderr, "HNSW_DEBUG: key_part.field=%p fieldnr=%u\n",
+          (void *)key_part.field, key_part.fieldnr);
   Item *col_item = new Item_field(key_part.field);
 
+  fprintf(stderr, "HNSW_DEBUG: scanning %d ordering items\n",
+          orderings->num_items());
   for (int i = 1; i < orderings->num_items(); ++i) {
     Item *const current_item = orderings->item(i);
+    fprintf(stderr, "HNSW_DEBUG:   item[%d] type=%d\n", i,
+            (int)current_item->type());
     if (current_item->type() != Item::FUNC_ITEM) continue;
 
     auto *item_func = down_cast<Item_func *>(current_item);
+    fprintf(stderr, "HNSW_DEBUG:   item[%d] functype=%d (want %d)\n", i,
+            (int)item_func->functype(),
+            (int)Item_func::VECTOR_DISTANCE_FUNC);
     if (item_func->functype() != Item_func::VECTOR_DISTANCE_FUNC) continue;
     if (item_func->arg_count < 2) continue;
 
@@ -532,15 +545,25 @@ static void CollectOrderingsFromVectorIndex(
     Item *arg1 = item_func->arguments()[1];
     Item *query_item = nullptr;
 
+    fprintf(stderr,
+            "HNSW_DEBUG:   arg0 type=%d arg1 type=%d const0=%d const1=%d\n",
+            (int)arg0->type(), (int)arg1->type(), arg0->const_item() ? 1 : 0,
+            arg1->const_item() ? 1 : 0);
+    bool eq0 = col_item->eq(arg0);
+    bool eq1 = col_item->eq(arg1);
+    fprintf(stderr, "HNSW_DEBUG:   eq(arg0)=%d eq(arg1)=%d\n", eq0 ? 1 : 0,
+            eq1 ? 1 : 0);
+
     /* One argument must match the indexed VECTOR column, the other
     must be a constant (the query vector literal). */
-    if (col_item->eq(arg0) && arg1->const_item())
+    if (eq0 && arg1->const_item())
       query_item = arg1;
-    else if (col_item->eq(arg1) && arg0->const_item())
+    else if (eq1 && arg0->const_item())
       query_item = arg0;
     else
       continue;
 
+    fprintf(stderr, "HNSW_DEBUG:   MATCH FOUND! Adding to spatial_indexes\n");
     SpatialDistanceScanInfo index_info;
     index_info.table = table;
     index_info.key_idx = key_idx;
@@ -732,8 +755,16 @@ void BuildInterestingOrders(
   for (unsigned node_idx = 0; node_idx < graph->nodes.size(); ++node_idx) {
     TABLE *table = graph->nodes[node_idx].table();
     for (unsigned key_idx = 0; key_idx < table->s->keys; ++key_idx) {
-      // NOTE: visible_index claims to contain “visible and enabled” indexes,
+      // NOTE: visible_index claims to contain "visible and enabled" indexes,
       // but we still need to check keys_in_use to ignore disabled indexes.
+      fprintf(stderr,
+              "HNSW_DEBUG: key[%u] name=%s algo=%d in_query=%d in_order=%d "
+              "in_group=%d\n",
+              key_idx, table->key_info[key_idx].name,
+              table->key_info[key_idx].algorithm,
+              table->keys_in_use_for_query.is_set(key_idx) ? 1 : 0,
+              table->keys_in_use_for_order_by.is_set(key_idx) ? 1 : 0,
+              table->keys_in_use_for_group_by.is_set(key_idx) ? 1 : 0);
       if (!table->keys_in_use_for_query.is_set(key_idx) &&
           !table->keys_in_use_for_order_by.is_set(key_idx) &&
           !table->keys_in_use_for_group_by.is_set(key_idx)) {

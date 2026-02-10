@@ -11133,6 +11133,17 @@ int ha_innobase::change_active_index(
 
   active_index = keynr;
 
+  /* HNSW vector indexes don't have a dict_index_t in InnoDB's internal
+     dictionary — they live in HnswIndexRegistry. Point m_prebuilt->index
+     to the clustered index so PK lookups work during the HNSW scan.
+     The actual search is handled in index_read() via HnswIndexRegistry. */
+  if (keynr != MAX_KEY && table->s->keys > keynr &&
+      table_share->key_info[keynr].algorithm == HA_KEY_ALG_HNSW) {
+    m_prebuilt->index = m_prebuilt->table->first_index();
+    m_prebuilt->index_usable = true;
+    return 0;
+  }
+
   m_prebuilt->index = innobase_get_index(keynr);
 
   if (m_prebuilt->index == nullptr) {
