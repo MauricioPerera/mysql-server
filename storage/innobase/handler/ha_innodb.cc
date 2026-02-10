@@ -7262,11 +7262,22 @@ static bool innobase_build_index_translation(
   ulint ib_num_index = UT_LIST_GET_LEN(ib_table->indexes);
   dict_index_t **index_mapping = share->idx_trans_tbl.index_mapping;
 
+  /* Count HNSW indexes which have no InnoDB B-tree representation.
+  These are managed by HnswIndexRegistry, not InnoDB's internal
+  dictionary, so they don't appear in ib_table->indexes. */
+  ulint hnsw_index_count = 0;
+  for (ulint i = 0; i < mysql_num_index; i++) {
+    if (table->key_info[i].algorithm == HA_KEY_ALG_HNSW) {
+      hnsw_index_count++;
+    }
+  }
+  ulint mysql_btree_index_count = mysql_num_index - hnsw_index_count;
+
   /* If there exists inconsistency between MySQL and InnoDB dictionary
   (metadata) information, the number of index defined in MySQL
   could exceed that in InnoDB, do not build index translation
   table in such case */
-  if (ib_num_index < mysql_num_index) {
+  if (ib_num_index < mysql_btree_index_count) {
     ret = false;
     goto func_exit;
   }
@@ -7301,6 +7312,14 @@ static bool innobase_build_index_translation(
   corresponding InnoDB index pointer into index_mapping
   array. */
   for (ulint count = 0; count < mysql_num_index; count++) {
+    /* HNSW indexes have no B-tree representation in InnoDB.
+    Store NULL in the translation table — lookups are handled
+    via HnswIndexRegistry, not through dict_index_t. */
+    if (table->key_info[count].algorithm == HA_KEY_ALG_HNSW) {
+      index_mapping[count] = nullptr;
+      continue;
+    }
+
     /* Fetch index pointers into index_mapping according to mysql
     index sequence */
     index_mapping[count] =
@@ -11081,6 +11100,11 @@ dict_index_t *ha_innobase::innobase_get_index(
 
   if (keynr != MAX_KEY && table->s->keys > 0) {
     key = table->key_info + keynr;
+
+    /* HNSW indexes have no dict_index_t — return NULL silently. */
+    if (key->algorithm == HA_KEY_ALG_HNSW) {
+      return nullptr;
+    }
 
     index = innobase_index_lookup(m_share, keynr);
 
@@ -18095,9 +18119,17 @@ int ha_innobase::info_low(uint flag, bool is_analyze) {
     }
   }
 
-  if (table->s->keys != num_innodb_index) {
+  /* Exclude HNSW indexes from the count comparison — they have no
+     InnoDB B-tree representation and live in HnswIndexRegistry. */
+  ulint mysql_keys_excl_hnsw = table->s->keys;
+  for (uint i = 0; i < table->s->keys; i++) {
+    if (table->key_info[i].algorithm == HA_KEY_ALG_HNSW) {
+      mysql_keys_excl_hnsw--;
+    }
+  }
+  if (mysql_keys_excl_hnsw != num_innodb_index) {
     log_errlog(ERROR_LEVEL, ER_INNODB_IDX_CNT_MORE_THAN_DEFINED_IN_MYSQL,
-               ib_table->name.m_name, num_innodb_index, table->s->keys);
+               ib_table->name.m_name, num_innodb_index, mysql_keys_excl_hnsw);
   }
 
   if (srv_force_recovery >= SRV_FORCE_NO_IBUF_MERGE) {
