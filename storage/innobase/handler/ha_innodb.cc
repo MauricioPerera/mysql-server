@@ -4426,7 +4426,7 @@ static void innobase_page_track_get_status(
 }
 
 /** Gives the file extension of an InnoDB single-table tablespace. */
-static const char *ha_innobase_exts[] = {dot_ext[IBD], NullS};
+static const char *ha_innobase_exts[] = {dot_ext[IBD], ".hnsw", NullS};
 
 /** This function checks if the given db.tablename is a system table
  supported by Innodb and is used as an initializer for the data member
