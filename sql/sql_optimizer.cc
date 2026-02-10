@@ -920,7 +920,7 @@ bool JOIN::optimize(bool finalize_access_paths) {
       if (!tab->position()) continue;
       if (setup_join_buffering(tab, this, no_jbuf_after)) return true;
       if (tab->use_join_cache() != JOIN_CACHE::ALG_NONE) simple_sort = false;
-      assert(tab->type() != JT_FT ||
+      assert((tab->type() != JT_FT && tab->type() != JT_DISTANCE_SCAN) ||
              tab->use_join_cache() == JOIN_CACHE::ALG_NONE);
       if (has_lateral && get_lateral_deps(*best_ref[i]) != 0) {
         deps_of_remaining_lateral_derived_tables =
@@ -1383,6 +1383,7 @@ uint QEP_TAB::effective_index() const {
 
     case JT_INDEX_SCAN:
     case JT_FT:
+    case JT_DISTANCE_SCAN:
       return index();
 
     case JT_INDEX_MERGE:
@@ -1757,6 +1758,24 @@ static Item_func_match *test_if_ft_index_order(ORDER *order) {
   if (order && order->next == nullptr && order->direction == ORDER_DESC &&
       is_function_of_type(*order->item, Item_func::FT_FUNC))
     return down_cast<Item_func_match *>(*order->item)->get_master();
+
+  return nullptr;
+}
+
+/**
+  Test if ORDER BY contains a single VECTOR_DISTANCE(...) ASC expression.
+
+  @param order  Linked list of ORDER BY expressions.
+
+  @retval Pointer to VECTOR_DISTANCE function if order is
+          'ORDER BY VECTOR_DISTANCE(...) ASC'
+  @retval NULL otherwise
+*/
+static Item_func_vector_distance *test_if_vector_distance_order(
+    ORDER *order) {
+  if (order && order->next == nullptr && order->direction == ORDER_ASC &&
+      is_function_of_type(*order->item, Item_func::VECTOR_DISTANCE_FUNC))
+    return down_cast<Item_func_vector_distance *>(*order->item);
 
   return nullptr;
 }
@@ -2300,11 +2319,68 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
     }
   }
 
-  /* NOTE: HNSW vector index distance scan is implemented in the hypergraph
-     optimizer path (CollectOrderingsFromVectorIndex + ProposeDistanceIndexScan).
-     The old optimizer uses table scan + sort for VECTOR_DISTANCE queries,
-     which gives correct results but without the HNSW index acceleration.
-     A QUICK_SELECT-based old-optimizer path is a future enhancement. */
+  /*
+    Check if HNSW vector index can be used to retrieve result in distance order.
+    Similar to FT handling above: ORDER BY VECTOR_DISTANCE(...) ASC LIMIT k
+    can use an HNSW index scan instead of table scan + sort.
+  */
+  if (!join->order.empty() && join->simple_order) {
+    Item_func_vector_distance *vd_func =
+        test_if_vector_distance_order(order.order);
+    if (vd_func && select_limit != HA_POS_ERROR && !tab->condition()) {
+      /* Find which argument is the indexed column and which is the query
+         vector constant. */
+      Item *arg0 = vd_func->arguments()[0];
+      Item *arg1 = vd_func->arguments()[1];
+
+      for (uint k = 0; k < table->s->keys; k++) {
+        KEY *key = &table->key_info[k];
+        if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+        if (!ha_check_storage_engine_flag(table->file->ht,
+                                          HTON_SUPPORTS_DISTANCE_SCAN))
+          continue;
+        if (key->user_defined_key_parts < 1) continue;
+
+        const KEY_PART_INFO &key_part = key->key_part[0];
+        Item *query_item = nullptr;
+
+        /* Match field argument against key part by field_index */
+        auto field_matches = [&](Item *item) -> bool {
+          Item *real = item->real_item();
+          if (real->type() != Item::FIELD_ITEM) return false;
+          auto *fld = down_cast<Item_field *>(real);
+          return fld->field->table == table &&
+                 fld->field->field_index() == key_part.fieldnr - 1;
+        };
+
+        if (field_matches(arg0) && arg1->const_item())
+          query_item = arg1;
+        else if (field_matches(arg1) && arg0->const_item())
+          query_item = arg0;
+        else
+          continue;
+
+        /* Extract query vector bytes */
+        String vec_buf;
+        String *vec_str = query_item->val_str(&vec_buf);
+        if (!vec_str || vec_str->length() == 0) continue;
+
+        const uchar *vec_bytes =
+            reinterpret_cast<const uchar *>(vec_str->ptr());
+        uint vec_len = vec_str->length();
+
+        /* Build QUICK_RANGE with query vector */
+        QUICK_RANGE *range = new (thd->mem_root) QUICK_RANGE(
+            thd->mem_root, vec_bytes, vec_len, make_keypart_map(0), vec_bytes,
+            0, 0, 0 /*flag*/, HA_READ_NEAREST_NEIGHBOR);
+
+        tab->set_type(JT_DISTANCE_SCAN);
+        tab->set_index(k);
+        tab->set_hnsw_range(range);
+        return true;
+      }
+    }
+  }
 
   /*
     Keys disabled by ALTER TABLE ... DISABLE KEYS should have already
@@ -2322,7 +2398,9 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
         down_cast<const Item_field *>(item)->field->part_of_sortkey);
     if (usable_keys.is_clear_all()) return false;  // No usable keys
   }
-  if (tab->type() == JT_REF_OR_NULL || tab->type() == JT_FT) return false;
+  if (tab->type() == JT_REF_OR_NULL || tab->type() == JT_FT ||
+      tab->type() == JT_DISTANCE_SCAN)
+    return false;
 
   ref_key = -1;
   /* Test if constant range in WHERE */
@@ -2639,7 +2717,8 @@ check_reverse_order:
         goto fix_ICP;
       }
 
-      assert(tab->type() != JT_REF_OR_NULL && tab->type() != JT_FT);
+      assert(tab->type() != JT_REF_OR_NULL && tab->type() != JT_FT &&
+             tab->type() != JT_DISTANCE_SCAN);
 
       // Changing the key makes filter_effect obsolete
       tab->position()->filter_effect = COND_FILTER_STALE;
