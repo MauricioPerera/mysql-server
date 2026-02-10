@@ -550,7 +550,10 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
   Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
   size_t rows_inserted = 0;
 
-  while (!(err = handler->ha_rnd_next(table->record[0]))) {
+  err = handler->ha_rnd_next(table->record[0]);
+  ib::info() << "HNSW build: first ha_rnd_next returned " << err;
+
+  while (!err) {
     uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
 
     String vec_buf;
@@ -561,6 +564,7 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
       hnsw_idx->insert(row_id, vec);
       rows_inserted++;
     }
+    err = handler->ha_rnd_next(table->record[0]);
   }
 
   handler->ha_rnd_end();
