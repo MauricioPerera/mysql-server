@@ -486,8 +486,9 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
   const char *col_name = key->key_part[0].field->field_name;
   Field *vec_field = key->key_part[0].field;
 
-  /* Get vector dimensions from field pack length */
-  size_t dims = vec_field->pack_length() / sizeof(float);
+  /* Get vector dimensions from field_length (not pack_length, which is
+     the blob header size for Field_vector which extends Field_blob) */
+  size_t dims = vec_field->field_length / sizeof(float);
 
   /* Parse HNSW parameters from key comment */
   uint32_t M, ef_construction;

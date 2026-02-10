@@ -8007,7 +8007,7 @@ int ha_innobase::open(const char *name, int, uint open_flags,
         /* .hnsw file missing or corrupt: register empty index from COMMENT.
            Future INSERTs will populate it via write_row hook. */
         Field *vec_field = key->key_part[0].field;
-        size_t dims = vec_field->pack_length() / sizeof(float);
+        size_t dims = vec_field->field_length / sizeof(float);
 
         uint32_t M = 16, ef = 200;
         innodb_vector::hnsw_metric_t metric = innodb_vector::hnsw_metric_t::L2;
