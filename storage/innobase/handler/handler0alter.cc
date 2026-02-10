@@ -1662,6 +1662,10 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
              all columns (including blobs/vectors) during scan. */
           auto saved_hint = m_prebuilt->hint_need_to_fetch_extra_cols;
           auto saved_rjk = m_prebuilt->read_just_key;
+          auto saved_blob = m_prebuilt->templ_contains_blob;
+          auto saved_fp = m_prebuilt->templ_contains_fixed_point;
+          auto saved_tmpl_type = m_prebuilt->template_type;
+          auto saved_n_tmpl = m_prebuilt->n_template;
           m_prebuilt->hint_need_to_fetch_extra_cols = ROW_RETRIEVE_ALL_COLS;
           m_prebuilt->read_just_key = 0;
           build_template(true);
@@ -1673,6 +1677,10 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
               if (build_hnsw_index_from_table(this, table, key)) {
                 m_prebuilt->hint_need_to_fetch_extra_cols = saved_hint;
                 m_prebuilt->read_just_key = saved_rjk;
+                m_prebuilt->templ_contains_blob = saved_blob;
+                m_prebuilt->templ_contains_fixed_point = saved_fp;
+                m_prebuilt->template_type = saved_tmpl_type;
+                m_prebuilt->n_template = saved_n_tmpl;
                 my_error(ER_INTERNAL_ERROR, MYF(0),
                          "Failed to build HNSW vector index");
                 return true;
@@ -1680,16 +1688,16 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
             }
           }
 
-          /* Restore prebuilt state.  Invalidate the template so it
-             gets rebuilt fresh for the next statement.  Keep
-             templ_contains_blob=true so that is_record_buffer_wanted()
-             returns false — the table has a blob/vector column and
-             the next query's template rebuild will set it anyway. */
+          /* Restore prebuilt state fully so that subsequent
+             statements (if the handler is reused) see the same
+             state as before the bulk-load scan. */
           m_prebuilt->hint_need_to_fetch_extra_cols = saved_hint;
           m_prebuilt->read_just_key = saved_rjk;
+          m_prebuilt->templ_contains_blob = saved_blob;
+          m_prebuilt->templ_contains_fixed_point = saved_fp;
           m_prebuilt->sql_stat_start = true;
-          m_prebuilt->template_type = ROW_MYSQL_NO_TEMPLATE;
-          m_prebuilt->n_template = 0;
+          m_prebuilt->template_type = saved_tmpl_type;
+          m_prebuilt->n_template = saved_n_tmpl;
         }
 
         /* Drop HNSW indexes */
