@@ -784,10 +784,9 @@ size_t Create_field::key_length() const {
       }
       return pack_length() + (max_display_width_in_bytes() & 7 ? 1 : 0);
     }
-    /* LCOV_EXCL_START */
     case MYSQL_TYPE_VECTOR:
-      assert(false);  // Key on VECTOR type column is not supported.
-    /* LCOV_EXCL_STOP */
+      /* HNSW indexes reference VECTOR columns. Return pack_length(). */
+      return pack_length();
     default: {
       return pack_length(is_array);
     }
