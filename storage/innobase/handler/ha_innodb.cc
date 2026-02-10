@@ -9632,46 +9632,38 @@ int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
     std::string hnsw_tbl_name(table->s->table_name.str);
     auto &hnsw_registry = innodb_vector::HnswIndexRegistry::instance();
 
-    /* Get primary key value as node ID (shared across all indexes) */
     uint64_t hnsw_row_id = 0;
     bool pk_extracted = false;
-    bool legacy_used = false;
 
-    /* Iterate ALL VECTOR columns, insert into each registered index */
-    for (uint i = 0; i < table->s->fields; i++) {
-      Field *fld = table->field[i];
-      if (fld->type() == MYSQL_TYPE_VECTOR) {
-        std::string col_name(fld->field_name);
+    /* DD-declared HNSW indexes: iterate key_info */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+      if (key->user_defined_key_parts < 1) continue;
 
-        /* Check for column-specific index first, then legacy (table-only) */
-        auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
-        if (!hnsw_idx) {
-          if (legacy_used) continue;
-          hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, "");
-          if (!hnsw_idx) continue;
-          /* Legacy index: only use for the first VECTOR column */
-          legacy_used = true;
+      Field *fld = key->key_part[0].field;
+      std::string col_name(fld->field_name);
+
+      auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      if (!hnsw_idx) continue;
+
+      if (!pk_extracted) {
+        if (table->s->primary_key != MAX_KEY) {
+          KEY *pk = &table->key_info[table->s->primary_key];
+          Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+          hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
         }
+        pk_extracted = true;
+      }
 
-        /* Extract PK once */
-        if (!pk_extracted) {
-          if (table->s->primary_key != MAX_KEY) {
-            KEY *pk = &table->key_info[table->s->primary_key];
-            Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
-            hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
-          }
-          pk_extracted = true;
-        }
-
-        String vec_buf;
-        fld->val_str(&vec_buf);
-        if (vec_buf.length() >= sizeof(float)) {
-          const float *vec_ptr =
-              reinterpret_cast<const float *>(vec_buf.ptr());
-          size_t dims = vec_buf.length() / sizeof(float);
-          std::vector<float> vec_data(vec_ptr, vec_ptr + dims);
-          hnsw_idx->insert(hnsw_row_id, vec_data);
-        }
+      String vec_buf;
+      fld->val_str(&vec_buf);
+      if (vec_buf.length() >= sizeof(float)) {
+        const float *vec_ptr =
+            reinterpret_cast<const float *>(vec_buf.ptr());
+        size_t dims = vec_buf.length() / sizeof(float);
+        std::vector<float> vec_data(vec_ptr, vec_ptr + dims);
+        hnsw_idx->insert(hnsw_row_id, vec_data);
       }
     }
   }
@@ -10389,44 +10381,41 @@ int ha_innobase::update_row(const uchar *old_row, uchar *new_row) {
 
     uint64_t hnsw_row_id = 0;
     bool pk_extracted = false;
-    bool legacy_used = false;
 
-    for (uint i = 0; i < table->s->fields; i++) {
-      Field *fld = table->field[i];
-      if (fld->type() == MYSQL_TYPE_VECTOR) {
-        std::string col_name(fld->field_name);
+    /* DD-declared HNSW indexes: iterate key_info */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+      if (key->user_defined_key_parts < 1) continue;
 
-        auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
-        if (!hnsw_idx) {
-          if (legacy_used) continue;
-          hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, "");
-          if (!hnsw_idx) continue;
-          legacy_used = true;
+      Field *fld = key->key_part[0].field;
+      std::string col_name(fld->field_name);
+
+      auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      if (!hnsw_idx) continue;
+
+      if (!pk_extracted) {
+        if (table->s->primary_key != MAX_KEY) {
+          KEY *pk = &table->key_info[table->s->primary_key];
+          Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+          hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
         }
+        pk_extracted = true;
+      }
 
-        if (!pk_extracted) {
-          if (table->s->primary_key != MAX_KEY) {
-            KEY *pk = &table->key_info[table->s->primary_key];
-            Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
-            hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
-          }
-          pk_extracted = true;
-        }
+      /* Use new_row data for the updated vector */
+      ptrdiff_t row_offset = new_row - table->record[0];
+      fld->move_field_offset(row_offset);
+      String vec_buf;
+      fld->val_str(&vec_buf);
+      fld->move_field_offset(-row_offset);
 
-        /* Use new_row data for the updated vector */
-        ptrdiff_t row_offset = new_row - table->record[0];
-        fld->move_field_offset(row_offset);
-        String vec_buf;
-        fld->val_str(&vec_buf);
-        fld->move_field_offset(-row_offset);
-
-        if (vec_buf.length() >= sizeof(float)) {
-          const float *vec_ptr =
-              reinterpret_cast<const float *>(vec_buf.ptr());
-          size_t dims = vec_buf.length() / sizeof(float);
-          std::vector<float> vec_data(vec_ptr, vec_ptr + dims);
-          hnsw_idx->update(hnsw_row_id, vec_data);
-        }
+      if (vec_buf.length() >= sizeof(float)) {
+        const float *vec_ptr =
+            reinterpret_cast<const float *>(vec_buf.ptr());
+        size_t dims = vec_buf.length() / sizeof(float);
+        std::vector<float> vec_data(vec_ptr, vec_ptr + dims);
+        hnsw_idx->update(hnsw_row_id, vec_data);
       }
     }
   }
@@ -10508,44 +10497,26 @@ int ha_innobase::delete_row(
 
     uint64_t hnsw_row_id = 0;
     bool pk_extracted = false;
-    bool has_vector_col = false;
 
-    /* Check if table has any VECTOR columns with registered indexes */
-    for (uint i = 0; i < table->s->fields; i++) {
-      if (table->field[i]->type() == MYSQL_TYPE_VECTOR) {
-        has_vector_col = true;
-        break;
-      }
-    }
+    /* DD-declared HNSW indexes: iterate key_info */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
 
-    if (has_vector_col) {
-      /* Extract PK for the row being deleted */
-      if (table->s->primary_key != MAX_KEY) {
-        KEY *pk = &table->key_info[table->s->primary_key];
-        Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
-        hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
+      std::string col_name(key->key_part[0].field->field_name);
+      auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      if (!hnsw_idx) continue;
+
+      if (!pk_extracted) {
+        if (table->s->primary_key != MAX_KEY) {
+          KEY *pk = &table->key_info[table->s->primary_key];
+          Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+          hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
+        }
         pk_extracted = true;
       }
 
-      if (pk_extracted) {
-        bool legacy_used = false;
-        for (uint i = 0; i < table->s->fields; i++) {
-          Field *fld = table->field[i];
-          if (fld->type() == MYSQL_TYPE_VECTOR) {
-            std::string col_name(fld->field_name);
-
-            auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
-            if (!hnsw_idx) {
-              if (legacy_used) continue;
-              hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, "");
-              if (!hnsw_idx) continue;
-              legacy_used = true;
-            }
-
-            hnsw_idx->remove(hnsw_row_id);
-          }
-        }
-      }
+      hnsw_idx->remove(hnsw_row_id);
     }
   }
 
