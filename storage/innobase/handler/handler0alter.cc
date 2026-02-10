@@ -1652,9 +1652,31 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
           }
         }
 
+        /* Copy DD SE private data from old to new, matching indexes
+           by name.  The new DD table may have fewer indexes (HNSW
+           dropped) or more (HNSW added, but HNSW indexes have no SE
+           private data).  dd_commit_inplace_no_change() cannot be
+           used here because it asserts equal index counts. */
+        new_dd_tab->set_se_private_id(old_dd_tab->se_private_id());
+        new_dd_tab->set_se_private_data(old_dd_tab->se_private_data());
+        new_dd_tab->set_row_format(old_dd_tab->row_format());
+
+        for (auto *new_idx : *new_dd_tab->indexes()) {
+          for (const auto *old_idx : old_dd_tab->indexes()) {
+            if (new_idx->name() == old_idx->name()) {
+              new_idx->set_se_private_data(old_idx->se_private_data());
+              new_idx->set_tablespace_id(old_idx->tablespace_id());
+              break;
+            }
+          }
+        }
+
         /* Clear ADD/DROP INDEX flags so commit treats this as trivial.
            InnoDB's inplace_alter_table_impl and commit_inplace_alter_table_impl
-           will see no INNOBASE_ALTER_DATA flags and return early. */
+           will see no INNOBASE_ALTER_DATA flags and return early.
+           The commit path (ctx==nullptr branch) will call
+           dd_commit_inplace_no_change, but we've already copied the
+           SE private data above so it will find matching indexes. */
         ha_alter_info->handler_flags &=
             ~(Alter_inplace_info::ADD_INDEX |
               Alter_inplace_info::DROP_INDEX |
@@ -1863,7 +1885,14 @@ bool ha_innobase::commit_inplace_alter_table(TABLE *altered_table,
   } else if (!(ha_alter_info->handler_flags & ~INNOBASE_INPLACE_IGNORE) ||
              ctx == nullptr) {
     ut_ad(!res);
-    dd_commit_inplace_no_change(ha_alter_info, old_dd_tab, new_dd_tab, false);
+    /* dd_commit_inplace_no_change asserts that old and new DD tables
+       have the same number of indexes.  When a pure HNSW index
+       ADD/DROP was handled in prepare_inplace_alter_table (ctx==NULL),
+       the index count may differ.  In that case prepare already copied
+       the SE private data, so skip the redundant (and crashing) call. */
+    if (old_dd_tab->indexes().size() == new_dd_tab->indexes()->size()) {
+      dd_commit_inplace_no_change(ha_alter_info, old_dd_tab, new_dd_tab, false);
+    }
   } else {
     ut_ad(old_info_updated);
     if (!ctx->need_rebuild() && !dict_table_has_fts_index(m_prebuilt->table)) {
