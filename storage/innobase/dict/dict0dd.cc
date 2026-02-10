@@ -3222,6 +3222,9 @@ inline int dd_fill_dict_index(const dd::Table &dd_table, const TABLE *m_form,
   }
 
   for (uint i = !m_form->s->primary_key; i < m_form->s->keys; i++) {
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (m_form->key_info[i].algorithm == HA_KEY_ALG_HNSW) continue;
+
     ulint dd_index_num = i + ((m_form->s->primary_key == MAX_KEY) ? 1 : 0);
 
     error = dd_fill_one_dict_index(dd_table.indexes()[dd_index_num], m_table,
@@ -5120,6 +5123,9 @@ dict_table_t *dd_open_table_one(dd::cache::Dictionary_client *client,
   /* Now fill the space ID and Root page number for each index */
   dict_index_t *index = m_table->first_index();
   for (const auto dd_index : dd_table->indexes()) {
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
     ut_ad(index != nullptr);
 
     const dd::Properties &se_private_data = dd_index->se_private_data();
