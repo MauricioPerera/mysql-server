@@ -490,26 +490,42 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
      the blob header size for Field_vector which extends Field_blob) */
   size_t dims = vec_field->field_length / sizeof(float);
 
+  if (dims == 0) {
+    ib::error() << "HNSW build: dims=0 for table=" << table_name
+                << " col=" << col_name
+                << " field_length=" << vec_field->field_length
+                << " pack_length=" << vec_field->pack_length();
+    return true;
+  }
+
   /* Parse HNSW parameters from key comment */
   uint32_t M, ef_construction;
   innodb_vector::hnsw_metric_t metric;
   parse_hnsw_comment(key->comment.str, &M, &ef_construction, &metric);
+
+  ib::info() << "HNSW build: table=" << table_name << " col=" << col_name
+             << " dims=" << dims << " M=" << M << " ef=" << ef_construction;
 
   auto &registry = innodb_vector::HnswIndexRegistry::instance();
 
   /* Register the new index */
   if (!registry.register_index(std::string(table_name), std::string(col_name),
                                 dims, M, ef_construction, metric)) {
-    return true;  /* Already exists */
+    ib::error() << "HNSW build: register_index failed (already exists?)";
+    return true;
   }
 
   auto *hnsw_idx = registry.get_index(std::string(table_name),
                                        std::string(col_name));
-  if (!hnsw_idx) return true;
+  if (!hnsw_idx) {
+    ib::error() << "HNSW build: get_index returned null after register";
+    return true;
+  }
 
   /* Scan all rows and insert vectors */
   int err = handler->ha_rnd_init(true);
   if (err) {
+    ib::error() << "HNSW build: ha_rnd_init failed with error " << err;
     registry.drop_index(std::string(table_name), std::string(col_name));
     return true;
   }
@@ -517,6 +533,7 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
   /* Find primary key field */
   KEY *pk = &table->key_info[table->s->primary_key];
   Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+  size_t rows_inserted = 0;
 
   while (!(err = handler->ha_rnd_next(table->record[0]))) {
     uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
@@ -527,10 +544,14 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
       const float *fdata = reinterpret_cast<const float *>(vec_buf.ptr());
       std::vector<float> vec(fdata, fdata + dims);
       hnsw_idx->insert(row_id, vec);
+      rows_inserted++;
     }
   }
 
   handler->ha_rnd_end();
+
+  ib::info() << "HNSW build: inserted " << rows_inserted
+             << " vectors, index size=" << hnsw_idx->size();
 
   /* Set file path for persistence */
   extern std::string hnsw_make_file_path(const char *, const char *,
@@ -544,6 +565,7 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
   /* Save to disk */
   hnsw_idx->save_to_file(file_path.c_str());
 
+  ib::info() << "HNSW build: saved to " << file_path;
   return false;
 }
 
@@ -1585,6 +1607,11 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
             Alter_inplace_info::ADD_INDEX |
             Alter_inplace_info::DROP_INDEX |
             Alter_inplace_info::DROP_UNIQUE_INDEX);
+
+      ib::info() << "HNSW prepare: has_hnsw_add=" << has_hnsw_add
+                 << " has_hnsw_drop=" << has_hnsw_drop
+                 << " remaining_flags=0x" << std::hex << remaining
+                 << std::dec;
 
       if (!remaining) {
         /* Build new HNSW indexes from existing table data */
