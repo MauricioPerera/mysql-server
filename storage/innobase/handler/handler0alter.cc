@@ -484,17 +484,25 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
                                          const KEY *key) {
   const char *table_name = table->s->table_name.str;
 
-  /* The KEY from key_info_buffer may not have its field pointer resolved
-     to the original table's Field object. Use fieldnr to look it up. */
-  Field *vec_field = key->key_part[0].field;
-  if (vec_field == nullptr) {
-    uint fieldnr = key->key_part[0].fieldnr;
-    if (fieldnr > 0 && fieldnr <= table->s->fields) {
-      vec_field = table->field[fieldnr - 1];
-    } else {
-      ib::error() << "HNSW build: cannot resolve field for key";
-      return true;
+  /* The KEY from key_info_buffer has field pointers resolved to
+     the *altered* table, not the original table we are scanning.
+     Look up the field in the original table by name. */
+  const char *key_col_name = key->key_part[0].field
+      ? key->key_part[0].field->field_name
+      : nullptr;
+  Field *vec_field = nullptr;
+  for (uint f = 0; f < table->s->fields; f++) {
+    if (key_col_name &&
+        strcmp(table->field[f]->field_name, key_col_name) == 0) {
+      vec_field = table->field[f];
+      break;
     }
+  }
+  if (vec_field == nullptr) {
+    ib::error() << "HNSW build: cannot resolve field '"
+                << (key_col_name ? key_col_name : "(null)")
+                << "' in original table";
+    return true;
   }
   const char *col_name = vec_field->field_name;
 
@@ -1650,17 +1658,38 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
       if (!remaining) {
         /* Build new HNSW indexes from existing table data */
         if (has_hnsw_add) {
+          /* Save and override prebuilt state so that InnoDB fetches
+             all columns (including blobs/vectors) during scan. */
+          auto saved_hint = m_prebuilt->hint_need_to_fetch_extra_cols;
+          auto saved_rjk = m_prebuilt->read_just_key;
+          m_prebuilt->hint_need_to_fetch_extra_cols = ROW_RETRIEVE_ALL_COLS;
+          m_prebuilt->read_just_key = 0;
+          build_template(true);
+
           for (uint i = 0; i < ha_alter_info->index_add_count; i++) {
             const KEY *key = &ha_alter_info->key_info_buffer[
                 ha_alter_info->index_add_buffer[i]];
             if (key->algorithm == HA_KEY_ALG_HNSW) {
               if (build_hnsw_index_from_table(this, table, key)) {
+                m_prebuilt->hint_need_to_fetch_extra_cols = saved_hint;
+                m_prebuilt->read_just_key = saved_rjk;
                 my_error(ER_INTERNAL_ERROR, MYF(0),
                          "Failed to build HNSW vector index");
                 return true;
               }
             }
           }
+
+          /* Restore prebuilt state.  Invalidate the template so it
+             gets rebuilt fresh for the next statement.  Keep
+             templ_contains_blob=true so that is_record_buffer_wanted()
+             returns false — the table has a blob/vector column and
+             the next query's template rebuild will set it anyway. */
+          m_prebuilt->hint_need_to_fetch_extra_cols = saved_hint;
+          m_prebuilt->read_just_key = saved_rjk;
+          m_prebuilt->sql_stat_start = true;
+          m_prebuilt->template_type = ROW_MYSQL_NO_TEMPLATE;
+          m_prebuilt->n_template = 0;
         }
 
         /* Drop HNSW indexes */
