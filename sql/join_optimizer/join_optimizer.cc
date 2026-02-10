@@ -1852,14 +1852,20 @@ bool CostingReceiver::FoundSingleNode(int node_idx) {
     }
   }
 
+  fprintf(stderr, "HNSW_DEBUG: spatial_indexes count=%zu for table=%s\n",
+          m_spatial_indexes->size(),
+          table->s->table_name.str);
   for (const SpatialDistanceScanInfo &order_info : *m_spatial_indexes) {
     if (order_info.table != table) {
       continue;
     }
 
     const int order = m_orderings->RemapOrderingIndex(order_info.forward_order);
+    fprintf(stderr, "HNSW_DEBUG: spatial_index key=%d forward_order=%d remapped_order=%d force_index=%d\n",
+            order_info.key_idx, order_info.forward_order, order, table->force_index);
 
     if (table->force_index || order != 0) {
+      fprintf(stderr, "HNSW_DEBUG: calling ProposeDistanceIndexScan\n");
       if (ProposeDistanceIndexScan(table, node_idx, range_result.row_estimate,
                                    order_info, order)) {
         return true;

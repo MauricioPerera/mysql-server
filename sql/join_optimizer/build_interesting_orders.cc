@@ -512,6 +512,8 @@ static void CollectOrderingsFromSpatialIndex(
 static void CollectOrderingsFromVectorIndex(
     THD *thd, TABLE *table, int key_idx, LogicalOrderings *orderings,
     Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes) {
+  fprintf(stderr, "HNSW_DEBUG: CollectOrderingsFromVectorIndex called key=%d\n",
+          key_idx);
   if (table->key_info[key_idx].algorithm != HA_KEY_ALG_HNSW) return;
   if (!ha_check_storage_engine_flag(table->file->ht,
                                     HTON_SUPPORTS_DISTANCE_SCAN))
@@ -520,17 +522,29 @@ static void CollectOrderingsFromVectorIndex(
   const KEY_PART_INFO &key_part = table->key_info[key_idx].key_part[0];
   Item *col_item = new Item_field(key_part.field);
 
+  fprintf(stderr, "HNSW_DEBUG: num_items=%d col_field=%s\n",
+          orderings->num_items(),
+          key_part.field ? key_part.field->field_name : "NULL");
+
   for (int i = 1; i < orderings->num_items(); ++i) {
     Item *const current_item = orderings->item(i);
+    fprintf(stderr, "HNSW_DEBUG: item[%d] type=%d\n", i, current_item->type());
     if (current_item->type() != Item::FUNC_ITEM) continue;
 
     auto *item_func = down_cast<Item_func *>(current_item);
+    fprintf(stderr, "HNSW_DEBUG: functype=%d (want %d=VECTOR_DISTANCE_FUNC)\n",
+            item_func->functype(), Item_func::VECTOR_DISTANCE_FUNC);
     if (item_func->functype() != Item_func::VECTOR_DISTANCE_FUNC) continue;
     if (item_func->arg_count < 2) continue;
 
     Item *arg0 = item_func->arguments()[0];
     Item *arg1 = item_func->arguments()[1];
     Item *query_item = nullptr;
+
+    fprintf(stderr, "HNSW_DEBUG: arg0 type=%d const=%d, arg1 type=%d const=%d\n",
+            arg0->type(), arg0->const_item(), arg1->type(), arg1->const_item());
+    fprintf(stderr, "HNSW_DEBUG: col_item->eq(arg0)=%d col_item->eq(arg1)=%d\n",
+            col_item->eq(arg0), col_item->eq(arg1));
 
     /* One argument must match the indexed VECTOR column, the other
     must be a constant (the query vector literal). */
