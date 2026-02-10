@@ -1623,6 +1623,12 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
             Alter_inplace_info::DROP_INDEX |
             Alter_inplace_info::DROP_UNIQUE_INDEX);
 
+      ib::info() << "HNSW prepare: handler_flags=0x" << std::hex
+                 << ha_alter_info->handler_flags << " remaining=0x"
+                 << remaining << std::dec
+                 << " has_hnsw_add=" << has_hnsw_add
+                 << " has_hnsw_drop=" << has_hnsw_drop;
+
       if (!remaining) {
         /* Build new HNSW indexes from existing table data */
         if (has_hnsw_add) {
