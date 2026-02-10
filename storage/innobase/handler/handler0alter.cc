@@ -558,6 +558,13 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
 
     String vec_buf;
     vec_field->val_str(&vec_buf);
+    ib::info() << "HNSW build: row_id=" << row_id
+               << " vec_buf.length()=" << vec_buf.length()
+               << " needed=" << (dims * sizeof(float))
+               << " vec_field_type=" << vec_field->type()
+               << " is_null=" << vec_field->is_null()
+               << " field_length=" << vec_field->field_length
+               << " pack_length=" << vec_field->pack_length();
     if (vec_buf.length() >= dims * sizeof(float)) {
       const float *fdata = reinterpret_cast<const float *>(vec_buf.ptr());
       std::vector<float> vec(fdata, fdata + dims);
