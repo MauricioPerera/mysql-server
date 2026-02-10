@@ -2318,26 +2318,11 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
     }
   }
 
-  /* Check if ORDER BY VECTOR_DISTANCE(...) LIMIT k can use an HNSW index */
-  {
-    auto *vd_func = test_if_vector_distance_order(order.order);
-    if (vd_func && select_limit != HA_POS_ERROR) {
-      for (uint k = 0; k < table->s->keys; k++) {
-        if (table->s->key_info[k].algorithm != HA_KEY_ALG_HNSW) continue;
-        Field *idx_field = table->s->key_info[k].key_part[0].field;
-        Item *arg0 = vd_func->arguments()[0];
-        Item *arg1 = vd_func->arguments()[1];
-        bool match = false;
-        if (arg0->type() == Item::FIELD_ITEM &&
-            down_cast<Item_field *>(arg0)->field == idx_field)
-          match = true;
-        else if (arg1->type() == Item::FIELD_ITEM &&
-                 down_cast<Item_field *>(arg1)->field == idx_field)
-          match = true;
-        if (match) return true; /* Skip sort — HNSW returns ordered by dist */
-      }
-    }
-  }
+  /* NOTE: HNSW vector index distance scan is implemented in the hypergraph
+     optimizer path (CollectOrderingsFromVectorIndex + ProposeDistanceIndexScan).
+     The old optimizer uses table scan + sort for VECTOR_DISTANCE queries,
+     which gives correct results but without the HNSW index acceleration.
+     A QUICK_SELECT-based old-optimizer path is a future enhancement. */
 
   /*
     Keys disabled by ALTER TABLE ... DISABLE KEYS should have already

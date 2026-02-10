@@ -1852,31 +1852,18 @@ bool CostingReceiver::FoundSingleNode(int node_idx) {
     }
   }
 
-  fprintf(stderr, "HNSW_DEBUG: checking %zu spatial_indexes for table=%s\n",
-          m_spatial_indexes->size(),
-          table->s->table_name.str);
   for (const SpatialDistanceScanInfo &order_info : *m_spatial_indexes) {
     if (order_info.table != table) {
       continue;
     }
 
     const int order = m_orderings->RemapOrderingIndex(order_info.forward_order);
-    fprintf(stderr,
-            "HNSW_DEBUG: spatial_index key=%d forward_order=%d order=%d "
-            "force_index=%d\n",
-            order_info.key_idx, (int)order_info.forward_order, order,
-            table->force_index ? 1 : 0);
 
     if (table->force_index || order != 0) {
-      fprintf(stderr, "HNSW_DEBUG: calling ProposeDistanceIndexScan\n");
       if (ProposeDistanceIndexScan(table, node_idx, range_result.row_estimate,
                                    order_info, order)) {
         return true;
       }
-    } else {
-      fprintf(stderr,
-              "HNSW_DEBUG: SKIPPED ProposeDistanceIndexScan (order==0 && "
-              "!force_index)\n");
     }
     found_index_scan = true;
   }
@@ -3967,11 +3954,6 @@ ProposeResult CostingReceiver::ProposeIndexScan(
 bool CostingReceiver::ProposeDistanceIndexScan(
     TABLE *table, int node_idx, double force_num_output_rows_after_filter,
     const SpatialDistanceScanInfo &order_info, int ordering_idx) {
-  fprintf(stderr,
-          "HNSW_DEBUG: ProposeDistanceIndexScan key=%d algo=%d "
-          "ordering_idx=%d\n",
-          order_info.key_idx,
-          table->key_info[order_info.key_idx].algorithm, ordering_idx);
   AccessPath path;
   unsigned int key_idx = order_info.key_idx;
 

@@ -68,10 +68,24 @@ HnswIndex* HnswIndexRegistry::get_index(const std::string& table_name,
 
   std::string key = make_key(table_name, column_name);
   auto it = indexes_.find(key);
-  if (it == indexes_.end()) {
-    return nullptr;
+  if (it != indexes_.end()) {
+    return it->second.index.get();
   }
-  return it->second.index.get();
+
+  /* When column is empty (legacy lookup), fall back to finding any
+     index registered with a "table:column" key.  This handles the
+     common case where HNSW_INFO('table') is called for a DD-declared
+     index that was registered with the column name. */
+  if (column_name.empty()) {
+    std::string prefix = table_name + ":";
+    for (const auto &pair : indexes_) {
+      if (pair.first.compare(0, prefix.size(), prefix) == 0) {
+        return pair.second.index.get();
+      }
+    }
+  }
+
+  return nullptr;
 }
 
 bool HnswIndexRegistry::drop_index(const std::string& table_name,
@@ -79,6 +93,14 @@ bool HnswIndexRegistry::drop_index(const std::string& table_name,
   std::lock_guard<std::mutex> lock(mutex_);
   std::string key = make_key(table_name, column_name);
   auto it = indexes_.find(key);
+
+  if (it == indexes_.end() && column_name.empty()) {
+    std::string prefix = table_name + ":";
+    for (it = indexes_.begin(); it != indexes_.end(); ++it) {
+      if (it->first.compare(0, prefix.size(), prefix) == 0) break;
+    }
+  }
+
   if (it == indexes_.end()) return false;
 
   // Delete .hnsw file from disk if path is known
@@ -94,7 +116,15 @@ bool HnswIndexRegistry::has_index(const std::string& table_name,
                                    const std::string& column_name) {
   std::lock_guard<std::mutex> lock(mutex_);
   std::string key = make_key(table_name, column_name);
-  return indexes_.find(key) != indexes_.end();
+  if (indexes_.find(key) != indexes_.end()) return true;
+
+  if (column_name.empty()) {
+    std::string prefix = table_name + ":";
+    for (const auto &pair : indexes_) {
+      if (pair.first.compare(0, prefix.size(), prefix) == 0) return true;
+    }
+  }
+  return false;
 }
 
 std::vector<std::string> HnswIndexRegistry::list_indexes() {
@@ -131,6 +161,14 @@ void HnswIndexRegistry::set_file_path(const std::string& table_name,
   std::lock_guard<std::mutex> lock(mutex_);
   std::string key = make_key(table_name, column_name);
   auto it = indexes_.find(key);
+
+  if (it == indexes_.end() && column_name.empty()) {
+    std::string prefix = table_name + ":";
+    for (it = indexes_.begin(); it != indexes_.end(); ++it) {
+      if (it->first.compare(0, prefix.size(), prefix) == 0) break;
+    }
+  }
+
   if (it != indexes_.end()) {
     it->second.file_path = path;
   }
@@ -143,6 +181,15 @@ std::string HnswIndexRegistry::get_file_path(const std::string& table_name,
   auto it = indexes_.find(key);
   if (it != indexes_.end()) {
     return it->second.file_path;
+  }
+
+  if (column_name.empty()) {
+    std::string prefix = table_name + ":";
+    for (const auto &pair : indexes_) {
+      if (pair.first.compare(0, prefix.size(), prefix) == 0) {
+        return pair.second.file_path;
+      }
+    }
   }
   return "";
 }
