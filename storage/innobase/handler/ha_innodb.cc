@@ -10810,8 +10810,14 @@ int ha_innobase::hnsw_pk_lookup(uchar *buf) {
   KEY *pk_key_info = &table->key_info[pk_keynr];
   Field *pk_field = pk_key_info->key_part[0].field;
 
+  /* Temporarily allow writes to all columns so pk_field->store()
+  doesn't trip the write_set bitmap assert in Debug builds. */
+  my_bitmap_map *old_map = dbug_tmp_use_all_columns(table, table->write_set);
+
   /* Store PK value into the field's location in record[0] */
   pk_field->store(static_cast<longlong>(pk_val), true);
+
+  dbug_tmp_restore_column_map(table->write_set, old_map);
 
   /* Build key from record buffer */
   uchar pk_key_buf[MAX_KEY_LENGTH];
