@@ -1094,6 +1094,10 @@ enum_alter_inplace_result ha_innobase::check_if_supported_inplace_alter(
     TABLE *altered_table, Alter_inplace_info *ha_alter_info) {
   DBUG_TRACE;
 
+  ib::info() << "HNSW trace: check_if_supported_inplace_alter entered"
+             << " flags=0x" << std::hex << ha_alter_info->handler_flags
+             << std::dec;
+
   if (srv_sys_space.created_new_raw()) {
     return HA_ALTER_INPLACE_NOT_SUPPORTED;
   }
