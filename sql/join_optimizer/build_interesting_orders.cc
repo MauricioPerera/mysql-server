@@ -509,31 +509,33 @@ static void CollectOrderingsFromSpatialIndex(
   in the coordinates field (the pointer fits in 8 bytes). The actual vector
   bytes are extracted later in ProposeDistanceIndexScan.
 */
+static bool hnsw_field_matches_key_part(Item *item,
+                                        const KEY_PART_INFO &key_part,
+                                        TABLE *table) {
+  Item *real = item->real_item();
+  if (real->type() != Item::FIELD_ITEM) return false;
+  auto *item_field = down_cast<Item_field *>(real);
+  /* Compare by field index within the same table, which avoids
+     the Field pointer mismatch between TABLE instance copies. */
+  return item_field->field->table == table &&
+         item_field->field->field_index() == key_part.fieldnr - 1;
+}
+
 static void CollectOrderingsFromVectorIndex(
     THD *thd, TABLE *table, int key_idx, LogicalOrderings *orderings,
     Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes) {
-  fprintf(stderr, "HNSW_DEBUG: CollectOrderingsFromVectorIndex called key=%d\n",
-          key_idx);
   if (table->key_info[key_idx].algorithm != HA_KEY_ALG_HNSW) return;
   if (!ha_check_storage_engine_flag(table->file->ht,
                                     HTON_SUPPORTS_DISTANCE_SCAN))
     return;
 
   const KEY_PART_INFO &key_part = table->key_info[key_idx].key_part[0];
-  Item *col_item = new Item_field(key_part.field);
-
-  fprintf(stderr, "HNSW_DEBUG: num_items=%d col_field=%s\n",
-          orderings->num_items(),
-          key_part.field ? key_part.field->field_name : "NULL");
 
   for (int i = 1; i < orderings->num_items(); ++i) {
     Item *const current_item = orderings->item(i);
-    fprintf(stderr, "HNSW_DEBUG: item[%d] type=%d\n", i, current_item->type());
     if (current_item->type() != Item::FUNC_ITEM) continue;
 
     auto *item_func = down_cast<Item_func *>(current_item);
-    fprintf(stderr, "HNSW_DEBUG: functype=%d (want %d=VECTOR_DISTANCE_FUNC)\n",
-            item_func->functype(), Item_func::VECTOR_DISTANCE_FUNC);
     if (item_func->functype() != Item_func::VECTOR_DISTANCE_FUNC) continue;
     if (item_func->arg_count < 2) continue;
 
@@ -541,30 +543,13 @@ static void CollectOrderingsFromVectorIndex(
     Item *arg1 = item_func->arguments()[1];
     Item *query_item = nullptr;
 
-    fprintf(stderr, "HNSW_DEBUG: arg0 type=%d const=%d, arg1 type=%d const=%d\n",
-            arg0->type(), arg0->const_item(), arg1->type(), arg1->const_item());
-    {
-      auto *ci = down_cast<Item_field *>(col_item);
-      fprintf(stderr, "HNSW_DEBUG: col_item fixed=%d field=%p collation=%s\n",
-              ci->fixed, ci->field, ci->collation.collation->m_coll_name);
-      if (arg0->type() == Item::FIELD_ITEM) {
-        auto *a0 = down_cast<Item_field *>(arg0->real_item());
-        fprintf(stderr, "HNSW_DEBUG: arg0 fixed=%d field=%p collation=%s base_field=%p\n",
-                a0->fixed, a0->field,
-                a0->collation.collation->m_coll_name,
-                a0->base_item_field()->field);
-        fprintf(stderr, "HNSW_DEBUG: col base_field=%p\n",
-                ci->base_item_field()->field);
-      }
-    }
-    fprintf(stderr, "HNSW_DEBUG: col_item->eq(arg0)=%d col_item->eq(arg1)=%d\n",
-            col_item->eq(arg0), col_item->eq(arg1));
-
-    /* One argument must match the indexed VECTOR column, the other
-    must be a constant (the query vector literal). */
-    if (col_item->eq(arg0) && arg1->const_item())
+    /* One argument must match the indexed VECTOR column (by field index
+       within the same table), the other must be a constant query vector. */
+    if (hnsw_field_matches_key_part(arg0, key_part, table) &&
+        arg1->const_item())
       query_item = arg1;
-    else if (col_item->eq(arg1) && arg0->const_item())
+    else if (hnsw_field_matches_key_part(arg1, key_part, table) &&
+             arg0->const_item())
       query_item = arg0;
     else
       continue;
