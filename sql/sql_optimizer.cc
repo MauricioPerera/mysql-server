@@ -1762,24 +1762,6 @@ static Item_func_match *test_if_ft_index_order(ORDER *order) {
 }
 
 /**
-  Test if ORDER BY contains a single VECTOR_DISTANCE(...) ASC expression.
-
-  @param order  Linked list of ORDER BY expressions.
-
-  @retval Pointer to VECTOR_DISTANCE function if order is
-          'ORDER BY VECTOR_DISTANCE(...) ASC'
-  @retval NULL otherwise
-*/
-static Item_func_vector_distance *test_if_vector_distance_order(
-    ORDER *order) {
-  if (order && order->next == nullptr && order->direction == ORDER_ASC &&
-      is_function_of_type(*order->item, Item_func::VECTOR_DISTANCE_FUNC))
-    return down_cast<Item_func_vector_distance *>(*order->item);
-
-  return nullptr;
-}
-
-/**
   Test if this is a prefix index.
 
   @param   table     table
