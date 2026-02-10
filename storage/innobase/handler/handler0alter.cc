@@ -483,8 +483,28 @@ static void parse_hnsw_comment(const char *comment, uint32_t *M,
 static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
                                          const KEY *key) {
   const char *table_name = table->s->table_name.str;
-  const char *col_name = key->key_part[0].field->field_name;
+
+  ib::info() << "HNSW build: entered for table=" << table_name
+             << " key_parts=" << key->user_defined_key_parts
+             << " fieldnr=" << key->key_part[0].fieldnr
+             << " field_ptr=" << (void *)key->key_part[0].field;
+
+  /* The KEY from key_info_buffer may not have its field pointer resolved
+     to the original table's Field object. Use fieldnr to look it up. */
   Field *vec_field = key->key_part[0].field;
+  if (vec_field == nullptr) {
+    uint fieldnr = key->key_part[0].fieldnr;
+    if (fieldnr > 0 && fieldnr <= table->s->fields) {
+      vec_field = table->field[fieldnr - 1];
+      ib::info() << "HNSW build: resolved field via fieldnr=" << fieldnr
+                 << " -> " << vec_field->field_name;
+    } else {
+      ib::error() << "HNSW build: field is NULL and fieldnr=" << fieldnr
+                  << " out of range (fields=" << table->s->fields << ")";
+      return true;
+    }
+  }
+  const char *col_name = vec_field->field_name;
 
   /* Get vector dimensions from field_length (not pack_length, which is
      the blob header size for Field_vector which extends Field_blob) */
@@ -1567,6 +1587,11 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
      If so, handle them directly via HnswIndexRegistry and skip
      InnoDB's prepare_impl (HNSW indexes are not B-tree indexes).
      ------------------------------------------------------------------ */
+  ib::info() << "HNSW check: handler_flags=0x" << std::hex
+             << ha_alter_info->handler_flags << std::dec
+             << " index_add_count=" << ha_alter_info->index_add_count
+             << " index_drop_count=" << ha_alter_info->index_drop_count
+             << " key_count=" << ha_alter_info->key_count;
   {
     bool has_hnsw_add = false;
     bool has_non_hnsw_add = false;
@@ -1576,6 +1601,9 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
     /* Check new indexes being added */
     if (ha_alter_info->handler_flags & Alter_inplace_info::ADD_INDEX) {
       for (uint i = 0; i < ha_alter_info->index_add_count; i++) {
+        uint buf_idx = ha_alter_info->index_add_buffer[i];
+        ib::info() << "HNSW check: add[" << i << "] buf_idx=" << buf_idx
+                   << " algorithm=" << ha_alter_info->key_info_buffer[buf_idx].algorithm;
         const KEY *key = &ha_alter_info->key_info_buffer[
             ha_alter_info->index_add_buffer[i]];
         if (key->algorithm == HA_KEY_ALG_HNSW) {
