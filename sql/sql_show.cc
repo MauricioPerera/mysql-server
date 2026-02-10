@@ -4909,6 +4909,9 @@ static int get_schema_tmp_table_keys_record(THD *thd, Table_ref *tables,
           case HA_KEY_ALG_FULLTEXT:
             str = "FULLTEXT";
             break;
+          case HA_KEY_ALG_HNSW:
+            str = "HNSW";
+            break;
           default:
             assert(0);
             str = "";
