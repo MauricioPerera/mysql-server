@@ -264,6 +264,12 @@ bool dd_table_match(const dict_table_t *table, const Table *dd_table) {
   }
 
   for (const auto dd_index : dd_table->indexes()) {
+    /* HNSW vector indexes are managed by HnswIndexRegistry, not InnoDB's
+       internal dictionary. They have no dict_index_t representation. */
+    if (dd_index->index().algorithm() == dd::Index::IA_HNSW) {
+      continue;
+    }
+
     if (dd_table->tablespace_id() == dict_sys_t::s_dd_sys_space_id &&
         dd_index->tablespace_id() != dd_table->tablespace_id()) {
       ib::warn(ER_IB_MSG_167)
@@ -901,6 +907,9 @@ bool dd_table_discard_tablespace(THD *thd, const dict_table_t *table,
 
     /* Set index root page. */
     for (auto dd_index : *table_def->indexes()) {
+      /* HNSW indexes have no InnoDB B-tree representation */
+      if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
       const dict_index_t *index = dd_find_index(table, dd_index);
       ut_ad(index != nullptr);
 
@@ -2635,6 +2644,9 @@ void dd_write_table(dd::Object_id dd_space_id, Table *dd_table,
   }
 
   for (auto dd_index : *dd_table->indexes()) {
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
     /* Don't assume the index orders are the same, even on
     CREATE TABLE. This could be called from TRUNCATE path,
     which would do some adjustment on FULLTEXT index, thus

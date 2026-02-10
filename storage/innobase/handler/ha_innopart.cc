@@ -2800,6 +2800,9 @@ int ha_innopart::set_dd_discard_attribute(dd::Table *table_def, bool discard) {
     dd_tablespace_set_state(thd, dd_space_id, space_name, dd_state);
 
     for (auto dd_index : *dd_part->indexes()) {
+      /* HNSW indexes have no InnoDB B-tree representation */
+      if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
       const dict_index_t *index = dd_find_index(table, dd_index);
       ut_ad(index != nullptr);
 
