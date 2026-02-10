@@ -1580,6 +1580,11 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
      InnoDB's prepare_impl (HNSW indexes are not B-tree indexes).
      ------------------------------------------------------------------ */
   {
+    ib::info() << "HNSW check: handler_flags=0x" << std::hex
+               << ha_alter_info->handler_flags << std::dec
+               << " index_add_count=" << ha_alter_info->index_add_count
+               << " index_drop_count=" << ha_alter_info->index_drop_count;
+
     bool has_hnsw_add = false;
     bool has_non_hnsw_add = false;
     bool has_hnsw_drop = false;
@@ -1590,12 +1595,17 @@ bool ha_innobase::prepare_inplace_alter_table(TABLE *altered_table,
       for (uint i = 0; i < ha_alter_info->index_add_count; i++) {
         const KEY *key = &ha_alter_info->key_info_buffer[
             ha_alter_info->index_add_buffer[i]];
+        ib::info() << "HNSW check: index_add[" << i << "] name="
+                   << key->name << " algorithm=" << key->algorithm
+                   << " HA_KEY_ALG_HNSW=" << HA_KEY_ALG_HNSW;
         if (key->algorithm == HA_KEY_ALG_HNSW) {
           has_hnsw_add = true;
         } else {
           has_non_hnsw_add = true;
         }
       }
+    } else {
+      ib::info() << "HNSW check: ADD_INDEX flag NOT set";
     }
 
     /* Check indexes being dropped */
