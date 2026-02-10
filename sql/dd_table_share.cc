@@ -227,6 +227,9 @@ static enum ha_key_alg dd_get_old_index_algorithm_type(
     case dd::Index::IA_FULLTEXT:
       return HA_KEY_ALG_FULLTEXT;
 
+    case dd::Index::IA_HNSW:
+      return HA_KEY_ALG_HNSW;
+
     default:
       assert(!"Should not hit here"); /* purecov: deadcode */
   }
