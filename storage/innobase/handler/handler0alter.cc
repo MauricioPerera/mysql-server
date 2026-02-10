@@ -537,10 +537,17 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
     return true;
   }
 
+  /* Ensure read_set includes all columns so that InnoDB fetches
+     blob/vector data during the table scan.  During ALTER TABLE
+     the read_set may not include the vector column. */
+  my_bitmap_map *old_read_map =
+      tmp_use_all_columns(table, table->read_set);
+
   /* Scan all rows and insert vectors */
   int err = handler->ha_rnd_init(true);
   if (err) {
     ib::error() << "HNSW build: ha_rnd_init failed with error " << err;
+    tmp_restore_column_map(table->read_set, old_read_map);
     registry.drop_index(std::string(table_name), std::string(col_name));
     return true;
   }
@@ -550,31 +557,21 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
   Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
   size_t rows_inserted = 0;
 
-  err = handler->ha_rnd_next(table->record[0]);
-  ib::info() << "HNSW build: first ha_rnd_next returned " << err;
-
-  while (!err) {
+  while (!(err = handler->ha_rnd_next(table->record[0]))) {
     uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
 
     String vec_buf;
     vec_field->val_str(&vec_buf);
-    ib::info() << "HNSW build: row_id=" << row_id
-               << " vec_buf.length()=" << vec_buf.length()
-               << " needed=" << (dims * sizeof(float))
-               << " vec_field_type=" << vec_field->type()
-               << " is_null=" << vec_field->is_null()
-               << " field_length=" << vec_field->field_length
-               << " pack_length=" << vec_field->pack_length();
     if (vec_buf.length() >= dims * sizeof(float)) {
       const float *fdata = reinterpret_cast<const float *>(vec_buf.ptr());
       std::vector<float> vec(fdata, fdata + dims);
       hnsw_idx->insert(row_id, vec);
       rows_inserted++;
     }
-    err = handler->ha_rnd_next(table->record[0]);
   }
 
   handler->ha_rnd_end();
+  tmp_restore_column_map(table->read_set, old_read_map);
 
   ib::info() << "HNSW build: inserted " << rows_inserted
              << " vectors, index size=" << hnsw_idx->size();
