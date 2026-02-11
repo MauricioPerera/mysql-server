@@ -24,6 +24,18 @@
 #include <cstdio>
 #include <sstream>
 
+/** Strip schema prefix from table name.
+    "db.table" → "table", "db/table" → "table", "table" → "table".
+    The registry stores bare table names (from table->s->table_name.str). */
+static std::string normalize_table_name(const std::string &name) {
+  std::string result = name;
+  auto dot = result.rfind('.');
+  if (dot != std::string::npos) result = result.substr(dot + 1);
+  auto slash = result.rfind('/');
+  if (slash != std::string::npos) result = result.substr(slash + 1);
+  return result;
+}
+
 // ============================================================================
 // HNSW_CREATE_INDEX Implementation
 // ============================================================================
@@ -61,7 +73,7 @@ String *Item_func_hnsw_create_index::val_str(String *) {
   String *table_str = args[0]->val_str(&table_buf);
   if (!table_str) { null_value = true; return nullptr; }
 
-  std::string table_name(table_str->c_ptr_safe());
+  std::string table_name = normalize_table_name(table_str->c_ptr_safe());
   std::string column_name;
   longlong dim, M, ef;
   innodb_vector::hnsw_metric_t metric = innodb_vector::hnsw_metric_t::L2;
@@ -165,7 +177,7 @@ String *Item_func_hnsw_drop_index::val_str(String *) {
   String *table_str = args[0]->val_str(&table_buf);
   if (!table_str) { null_value = true; return nullptr; }
 
-  std::string table_name(table_str->c_ptr_safe());
+  std::string table_name = normalize_table_name(table_str->c_ptr_safe());
   std::string column_name;
 
   if (arg_count >= 2) {
@@ -211,7 +223,7 @@ String *Item_func_hnsw_save_index::val_str(String *) {
   String *table_str = args[0]->val_str(&table_buf);
   if (!table_str) { null_value = true; return nullptr; }
 
-  std::string table_name(table_str->c_ptr_safe());
+  std::string table_name = normalize_table_name(table_str->c_ptr_safe());
   std::string column_name;
   std::string path;
 
@@ -271,7 +283,7 @@ String *Item_func_hnsw_load_index::val_str(String *) {
   String *table_str = args[0]->val_str(&table_buf);
   if (!table_str) { null_value = true; return nullptr; }
 
-  std::string table_name(table_str->c_ptr_safe());
+  std::string table_name = normalize_table_name(table_str->c_ptr_safe());
   std::string column_name;
   std::string path;
 
@@ -331,7 +343,7 @@ String *Item_func_hnsw_info::val_str(String *) {
   String *table_str = args[0]->val_str(&table_buf);
   if (!table_str) { null_value = true; return nullptr; }
 
-  std::string table_name(table_str->c_ptr_safe());
+  std::string table_name = normalize_table_name(table_str->c_ptr_safe());
   std::string column_name;
 
   if (arg_count >= 2) {

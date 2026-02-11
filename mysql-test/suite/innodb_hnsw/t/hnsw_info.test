@@ -1,0 +1,27 @@
+--echo #
+--echo # HNSW Vector Index - HNSW_INFO() Function
+--echo #
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+
+INSERT INTO t1 VALUES (1, TO_VECTOR('[1,0,0,0]'));
+INSERT INTO t1 VALUES (2, TO_VECTOR('[0,1,0,0]'));
+
+--echo # HNSW_INFO with bare table name
+SELECT HNSW_INFO('t1') IS NOT NULL AS has_info;
+
+--echo # HNSW_INFO with table and column
+SELECT HNSW_INFO('t1', 'v') IS NOT NULL AS has_info;
+
+--echo # Non-existent table
+SELECT HNSW_INFO('no_such_table') IS NULL AS is_null;
+
+--echo # Non-existent column
+SELECT HNSW_INFO('t1', 'no_such_col') IS NULL AS is_null;
+
+DROP TABLE t1;

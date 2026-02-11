@@ -1,0 +1,35 @@
+--echo #
+--echo # HNSW Vector Index - innodb_hnsw_ef_search Session Variable
+--echo #
+
+--echo # Default value
+SHOW VARIABLES LIKE 'innodb_hnsw_ef_search';
+
+--echo # Set to custom values
+SET innodb_hnsw_ef_search = 500;
+SELECT @@innodb_hnsw_ef_search;
+
+SET innodb_hnsw_ef_search = 1;
+SELECT @@innodb_hnsw_ef_search;
+
+SET innodb_hnsw_ef_search = 10000;
+SELECT @@innodb_hnsw_ef_search;
+
+--echo # Restore default
+SET innodb_hnsw_ef_search = 200;
+SELECT @@innodb_hnsw_ef_search;
+
+--echo # Boundary: below minimum (truncates to 1 with warning)
+SET innodb_hnsw_ef_search = 0;
+SELECT @@innodb_hnsw_ef_search;
+
+--echo # Boundary: above maximum (truncates to 10000 with warning)
+SET innodb_hnsw_ef_search = 20000;
+SELECT @@innodb_hnsw_ef_search;
+
+--echo # Verify it is a session variable
+SET SESSION innodb_hnsw_ef_search = 300;
+SELECT @@SESSION.innodb_hnsw_ef_search;
+
+--echo # Restore default
+SET innodb_hnsw_ef_search = 200;

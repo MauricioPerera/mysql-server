@@ -1,0 +1,45 @@
+--echo #
+--echo # HNSW Vector Index - DML Operations (INSERT/UPDATE/DELETE)
+--echo #
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+
+--echo # Insert rows
+INSERT INTO t1 VALUES (1, TO_VECTOR('[1,0,0,0]'));
+INSERT INTO t1 VALUES (2, TO_VECTOR('[0,1,0,0]'));
+INSERT INTO t1 VALUES (3, TO_VECTOR('[0,0,1,0]'));
+
+--echo # Verify all found
+SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 3;
+
+--echo #
+--echo # DELETE: remove id=1 and verify search no longer returns it
+--echo #
+DELETE FROM t1 WHERE id = 1;
+
+SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 1;
+
+--echo #
+--echo # INSERT after DELETE: add new vector
+--echo #
+INSERT INTO t1 VALUES (4, TO_VECTOR('[0.9,0.1,0,0]'));
+
+SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 1;
+
+--echo #
+--echo # UPDATE: change vector value
+--echo #
+UPDATE t1 SET v = TO_VECTOR('[1,0,0,0]') WHERE id = 2;
+
+SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 1;
+
+DROP TABLE t1;

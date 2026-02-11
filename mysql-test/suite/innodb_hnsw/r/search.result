@@ -1,0 +1,45 @@
+#
+# HNSW Vector Index - KNN Search Operations
+#
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+v VECTOR(4)
+) ENGINE=InnoDB;
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+INSERT INTO t1 VALUES (1, TO_VECTOR('[1,0,0,0]'));
+INSERT INTO t1 VALUES (2, TO_VECTOR('[0,1,0,0]'));
+INSERT INTO t1 VALUES (3, TO_VECTOR('[0,0,1,0]'));
+INSERT INTO t1 VALUES (4, TO_VECTOR('[1,1,0,0]'));
+# EXPLAIN should show distance index scan
+EXPLAIN FORMAT=TREE SELECT id FROM t1
+ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+EXPLAIN
+-> Limit: 2 row(s)  (cost=N rows=N)
+    -> Index distance scan on t1 using vec_idx  (cost=N rows=N)
+
+# KNN: closest to [1,0,0,0] should be id=1 (dist=0), then id=4 (dist=1)
+SELECT id FROM t1
+ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+id
+1
+4
+# Brute force comparison via IGNORE INDEX
+SELECT id FROM t1 IGNORE INDEX(vec_idx)
+ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+id
+1
+4
+# KNN: closest to [0,0,1,0] should be id=3
+SELECT id FROM t1
+ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[0,0,1,0]'), 'L2') LIMIT 1;
+id
+3
+# All results with distances
+SELECT id, VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') AS dist FROM t1
+ORDER BY dist LIMIT 4;
+id	dist
+1	0
+4	1
+2	1.4142135623730951
+3	1.4142135623730951
+DROP TABLE t1;

@@ -1,0 +1,46 @@
+#
+# HNSW Vector Index - innodb_hnsw_ef_search Session Variable
+#
+# Default value
+SHOW VARIABLES LIKE 'innodb_hnsw_ef_search';
+Variable_name	Value
+innodb_hnsw_ef_search	200
+# Set to custom values
+SET innodb_hnsw_ef_search = 500;
+SELECT @@innodb_hnsw_ef_search;
+@@innodb_hnsw_ef_search
+500
+SET innodb_hnsw_ef_search = 1;
+SELECT @@innodb_hnsw_ef_search;
+@@innodb_hnsw_ef_search
+1
+SET innodb_hnsw_ef_search = 10000;
+SELECT @@innodb_hnsw_ef_search;
+@@innodb_hnsw_ef_search
+10000
+# Restore default
+SET innodb_hnsw_ef_search = 200;
+SELECT @@innodb_hnsw_ef_search;
+@@innodb_hnsw_ef_search
+200
+# Boundary: below minimum (truncates to 1 with warning)
+SET innodb_hnsw_ef_search = 0;
+Warnings:
+Warning	1292	Truncated incorrect innodb_hnsw_ef_search value: '0'
+SELECT @@innodb_hnsw_ef_search;
+@@innodb_hnsw_ef_search
+1
+# Boundary: above maximum (truncates to 10000 with warning)
+SET innodb_hnsw_ef_search = 20000;
+Warnings:
+Warning	1292	Truncated incorrect innodb_hnsw_ef_search value: '20000'
+SELECT @@innodb_hnsw_ef_search;
+@@innodb_hnsw_ef_search
+10000
+# Verify it is a session variable
+SET SESSION innodb_hnsw_ef_search = 300;
+SELECT @@SESSION.innodb_hnsw_ef_search;
+@@SESSION.innodb_hnsw_ef_search
+300
+# Restore default
+SET innodb_hnsw_ef_search = 200;

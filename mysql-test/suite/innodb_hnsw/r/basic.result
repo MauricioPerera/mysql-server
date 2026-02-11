@@ -1,0 +1,86 @@
+#
+# HNSW Vector Index - Basic DDL Operations
+#
+# Create table with VECTOR column and HNSW index
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+v VECTOR(4)
+) ENGINE=InnoDB;
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+# Verify SHOW CREATE TABLE includes HNSW index
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `v` vector(4) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `vec_idx` (`v`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Verify index exists in information_schema
+SELECT index_name FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name='t1' AND index_name='vec_idx';
+INDEX_NAME
+vec_idx
+# Drop the index
+DROP INDEX vec_idx ON t1;
+# Verify index is gone
+SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name='t1' AND index_name='vec_idx';
+COUNT(*)
+0
+DROP TABLE t1;
+#
+# High-dimension vector (should NOT hit ER_TOO_LONG_KEY)
+#
+CREATE TABLE t2 (
+id INT PRIMARY KEY,
+v VECTOR(1536)
+) ENGINE=InnoDB;
+CREATE INDEX vec_idx USING HNSW ON t2(v);
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `id` int NOT NULL,
+  `v` vector(1536) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `vec_idx` (`v`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t2;
+#
+# HNSW index with COMMENT parameters
+#
+CREATE TABLE t3 (
+id INT PRIMARY KEY,
+v VECTOR(128)
+) ENGINE=InnoDB;
+CREATE INDEX vec_idx USING HNSW ON t3(v) COMMENT 'M=32,ef=400,metric=cosine';
+SHOW CREATE TABLE t3;
+Table	Create Table
+t3	CREATE TABLE `t3` (
+  `id` int NOT NULL,
+  `v` vector(128) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `vec_idx` (`v`) COMMENT 'M=32,ef=400,metric=cosine'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t3;
+#
+# Multiple HNSW indexes on same table
+#
+CREATE TABLE t4 (
+id INT PRIMARY KEY,
+v1 VECTOR(64),
+v2 VECTOR(128)
+) ENGINE=InnoDB;
+CREATE INDEX idx1 USING HNSW ON t4(v1);
+CREATE INDEX idx2 USING HNSW ON t4(v2);
+SHOW CREATE TABLE t4;
+Table	Create Table
+t4	CREATE TABLE `t4` (
+  `id` int NOT NULL,
+  `v1` vector(64) DEFAULT NULL,
+  `v2` vector(128) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx1` (`v1`),
+  KEY `idx2` (`v2`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t4;
