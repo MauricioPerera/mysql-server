@@ -670,6 +670,12 @@ class ha_innobase : public handler {
   @retval 0 on success */
   int truncate_impl(const char *name, TABLE *form, dd::Table *table_def);
 
+ public:
+  /** Force InnoDB to rebuild the row template on next row fetch.
+  Used by HNSW crash recovery reconciliation which needs to read
+  VECTOR columns that weren't in the original query's template. */
+  void force_template_rebuild();
+
  protected:
   /** Enter InnoDB engine after checking max allowed threads.
   @return mysql error code. */

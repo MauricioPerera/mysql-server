@@ -3243,6 +3243,14 @@ void ha_innobase::reset_template(void) {
   }
 }
 
+void ha_innobase::force_template_rebuild() {
+  m_prebuilt->sql_stat_start = 1;
+  m_prebuilt->hint_need_to_fetch_extra_cols = ROW_RETRIEVE_ALL_COLS;
+  m_prebuilt->read_just_key = 0;
+  m_prebuilt->template_type = ROW_MYSQL_NO_TEMPLATE;
+  build_template(true);
+}
+
 /** Call this when you have opened a new table handle in HANDLER, before you
  call index_read_map() etc. Actually, we can let the cursor stay open even
  over a transaction commit! Then you should call this before every operation,
@@ -7535,66 +7543,119 @@ static void hnsw_reconcile(ha_innobase *handler, TABLE *tbl_table,
                            const std::string &tbl, const std::string &col,
                            Field *vec_field, KEY *pk,
                            std::shared_ptr<innodb_vector::HnswIndex> hnsw) {
-  /* Collect all external IDs currently in the HNSW graph */
+  /* Detect whether the HNSW graph matches InnoDB by scanning the table
+     and comparing row count, IDs, and vectors.  If any mismatch is found,
+     rebuild the entire index from scratch so the graph structure is optimal. */
+
   auto hnsw_ids_vec = hnsw->get_all_ids();
   std::unordered_set<uint64_t> hnsw_set(hnsw_ids_vec.begin(),
                                          hnsw_ids_vec.end());
-  std::unordered_set<uint64_t> table_ids;
-  bool changed = false;
 
   Field *pk_field = tbl_table->field[pk->key_part[0].fieldnr - 1];
 
-  /* Full table scan */
-  if (handler->ha_rnd_init(true) != 0) return;
+  /* Find the VECTOR field by name in table->field[] to ensure we read from
+     the correct record buffer location during the table scan.  Using the
+     field pointer from KEY_PART_INFO may read stale BLOB pointer data. */
+  Field *scan_vec_field = nullptr;
+  for (uint fi = 0; fi < tbl_table->s->fields; fi++) {
+    if (tbl_table->field[fi]->type() == MYSQL_TYPE_VECTOR &&
+        strcmp(tbl_table->field[fi]->field_name, col.c_str()) == 0) {
+      scan_vec_field = tbl_table->field[fi];
+      break;
+    }
+  }
+  if (!scan_vec_field) return;
+
+  /* Ensure all columns (including VECTOR blobs) are fetched during scan.
+     The HNSW distance scan template may not include the VECTOR column
+     because HNSW computes distances internally.  We need the raw vector
+     data for reconciliation, so:
+     1) Set read_set to all_set so InnoDB's build_template includes VECTOR
+     2) Call ha_rnd_init first (sets prebuilt->index to clustered)
+     3) Force template rebuild AFTER index is set */
+  MY_BITMAP *saved_read_set = tbl_table->read_set;
+  tbl_table->read_set = &tbl_table->s->all_set;
+
+  /* Pass 1: Collect all rows from InnoDB and check for mismatches */
+  if (handler->ha_rnd_init(true) != 0) {
+    tbl_table->read_set = saved_read_set;
+    return;
+  }
+  /* Now force whole-row template rebuild on the clustered index */
+  handler->force_template_rebuild();
+
+  struct row_data_t {
+    uint64_t id;
+    std::vector<float> vec;
+  };
+  std::vector<row_data_t> rows;
+  bool needs_rebuild = false;
 
   uchar *buf = tbl_table->record[0];
   int err;
-  uint64_t insert_count = 0;
-  uint64_t remove_count = 0;
   while ((err = handler->ha_rnd_next(buf)) == 0) {
     uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
-    table_ids.insert(row_id);
 
-    if (!hnsw->contains(row_id)) {
-      /* Row exists in InnoDB but missing from HNSW — re-insert */
-      String vec_buf;
-      vec_field->val_str(&vec_buf);
-      if (vec_buf.length() >= sizeof(float)) {
-        const float *ptr =
-            reinterpret_cast<const float *>(vec_buf.ptr());
-        size_t dims = vec_buf.length() / sizeof(float);
-        std::vector<float> vec_data(ptr, ptr + dims);
-        hnsw->insert(row_id, vec_data);
-        insert_count++;
-        changed = true;
+    String vec_buf;
+    scan_vec_field->val_str(&vec_buf);
+    if (vec_buf.length() < sizeof(float)) continue;
+
+    const float *ptr = reinterpret_cast<const float *>(vec_buf.ptr());
+    size_t dims = vec_buf.length() / sizeof(float);
+    std::vector<float> vec_data(ptr, ptr + dims);
+
+    if (!needs_rebuild) {
+      if (!hnsw->contains(row_id)) {
+        needs_rebuild = true;
+      } else {
+        const std::vector<float> *stored = hnsw->get_vector(row_id);
+        if (!stored || *stored != vec_data) {
+          needs_rebuild = true;
+        }
       }
     }
+
+    rows.push_back({row_id, std::move(vec_data)});
   }
   handler->ha_rnd_end();
+  tbl_table->read_set = saved_read_set;
+  handler->force_template_rebuild();
 
-  /* Remove HNSW entries whose rows no longer exist in the table */
-  for (uint64_t id : hnsw_ids_vec) {
-    if (table_ids.find(id) == table_ids.end()) {
-      hnsw->remove(id);
-      remove_count++;
-      changed = true;
+  /* Check for stale HNSW entries (IDs in graph but not in table) */
+  if (!needs_rebuild) {
+    for (uint64_t id : hnsw_ids_vec) {
+      bool found = false;
+      for (const auto &r : rows) {
+        if (r.id == id) { found = true; break; }
+      }
+      if (!found) { needs_rebuild = true; break; }
     }
   }
 
-  if (insert_count > 0 || remove_count > 0) {
-    ib::info(ER_IB_MSG_1) << "HNSW reconcile " << tbl << "." << col
-                           << ": inserted " << insert_count
-                           << ", removed " << remove_count;
+  if (!needs_rebuild) return;
+
+  /* Rebuild the entire HNSW index from scratch */
+  auto cfg = hnsw->config();
+  cfg.max_elements = std::max(cfg.max_elements,
+                              static_cast<uint32_t>(rows.size() * 2));
+  auto fresh = std::make_shared<innodb_vector::HnswIndex>(cfg);
+
+  for (const auto &r : rows) {
+    fresh->insert(r.id, r.vec);
   }
 
-  /* Persist the repaired index */
-  if (changed) {
-    auto &reg = innodb_vector::HnswIndexRegistry::instance();
-    std::string path = reg.get_file_path(tbl, col);
-    if (!path.empty()) {
-      hnsw->save_to_file(path.c_str());
-      hnsw->mark_clean();
-    }
+  ib::info(ER_IB_MSG_1) << "HNSW reconcile " << tbl << "." << col
+                         << ": rebuilt index with " << rows.size()
+                         << " vectors (was " << hnsw_ids_vec.size() << ")";
+
+  /* Replace the index in the registry */
+  auto &reg = innodb_vector::HnswIndexRegistry::instance();
+  std::string path = reg.get_file_path(tbl, col);
+  reg.replace_index(tbl, col, fresh);
+
+  if (!path.empty()) {
+    fresh->save_to_file(path.c_str());
+    fresh->mark_clean();
   }
 }
 
@@ -8185,8 +8246,7 @@ int ha_innobase::open(const char *name, int, uint open_flags,
 
     /* HNSW Crash Recovery: mark indexes loaded from file as needing
        reconciliation.  The actual reconciliation happens lazily on the
-       first HNSW search query, when the handler is fully open and
-       ha_rnd_init / ha_rnd_next are safe to call. */
+       first HNSW search query via hnsw_index_read. */
     for (const auto &[col_name, vec_field] : loaded_from_file) {
       hnsw_reg.set_needs_reconcile(tbl, col_name, true);
     }
@@ -10943,15 +11003,24 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   if (!hnsw) return HA_ERR_END_OF_FILE;
 
   /* Lazy crash recovery: reconcile HNSW index with InnoDB data on first
-     search after loading from a stale .hnsw file. */
+     search after loading from a stale .hnsw file.
+     Transition handler: end index → rnd scan → end rnd → restart index. */
   if (reg.check_and_clear_reconcile(tbl, col)) {
     if (table->s->primary_key != MAX_KEY) {
+      uint saved_idx = active_index;
       KEY *pk = &table->key_info[table->s->primary_key];
-      /* Use table->key_info (bound to record buffer), NOT table_share */
       Field *vec_field =
-          table->key_info[active_index].key_part[0].field;
+          table->key_info[saved_idx].key_part[0].field;
+      /* End the HNSW index scan so the handler is in idle state */
+      ha_index_end();
       hnsw_reconcile(this, table, std::string(tbl), std::string(col),
                      vec_field, pk, hnsw);
+      /* Restart the index scan for the HNSW query and reset template
+         so PK lookups work properly after the reconciliation scan. */
+      ha_index_init(saved_idx, true);
+      force_template_rebuild();
+      hnsw = reg.get_index(tbl, col);
+      if (!hnsw) return HA_ERR_END_OF_FILE;
     }
   }
 
@@ -10974,6 +11043,7 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   }
   std::sort(m_hnsw_scan.results.begin(), m_hnsw_scan.results.end(),
             [](const auto &a, const auto &b) { return a.second < b.second; });
+
   m_hnsw_scan.current_pos = 0;
   m_hnsw_scan.active = true;
 

@@ -195,6 +195,18 @@ std::string HnswIndexRegistry::get_file_path(const std::string& table_name,
   return "";
 }
 
+void HnswIndexRegistry::replace_index(const std::string& table_name,
+                                       const std::string& column_name,
+                                       std::shared_ptr<HnswIndex> new_index) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::string key = make_key(table_name, column_name);
+  auto it = indexes_.find(key);
+  if (it != indexes_.end()) {
+    it->second.index = std::move(new_index);
+    it->second.needs_reconcile = false;
+  }
+}
+
 void HnswIndexRegistry::set_needs_reconcile(const std::string& table_name,
                                              const std::string& column_name,
                                              bool flag) {

@@ -136,6 +136,14 @@ class HnswIndexRegistry {
   static const char* metric_to_string(hnsw_metric_t metric);
 
   /**
+    Replace the index for a given table/column with a new one.
+    Used by crash recovery to swap in a freshly rebuilt index.
+  */
+  void replace_index(const std::string& table_name,
+                     const std::string& column_name,
+                     std::shared_ptr<HnswIndex> new_index);
+
+  /**
     Mark an index as needing crash recovery reconciliation.
     Called during open() when an index is loaded from a stale .hnsw file.
   */

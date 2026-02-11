@@ -572,6 +572,15 @@ std::vector<uint64_t> HnswIndex::get_all_ids() const {
   return ids;
 }
 
+const std::vector<float>* HnswIndex::get_vector(uint64_t id) const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  auto it = id_to_idx_.find(id);
+  if (it == id_to_idx_.end()) return nullptr;
+  uint64_t idx = it->second;
+  if (idx >= nodes_.size() || nodes_[idx].deleted) return nullptr;
+  return &nodes_[idx].vector;
+}
+
 uint64_t HnswIndex::size() const {
   std::shared_lock<std::shared_mutex> lock(index_mutex_);
   return active_elements_;

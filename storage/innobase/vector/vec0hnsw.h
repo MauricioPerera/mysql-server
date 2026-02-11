@@ -150,6 +150,12 @@ class HnswIndex {
   */
   std::vector<uint64_t> get_all_ids() const;
 
+  /**
+    Get the stored vector for an external ID.
+    @return pointer to the stored vector, or nullptr if not found.
+  */
+  const std::vector<float>* get_vector(uint64_t id) const;
+
   /** Check if the index has been modified since last save/load. */
   bool is_dirty() const { return dirty_.load(std::memory_order_relaxed); }
 
