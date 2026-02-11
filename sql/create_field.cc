@@ -785,8 +785,8 @@ size_t Create_field::key_length() const {
       return pack_length() + (max_display_width_in_bytes() & 7 ? 1 : 0);
     }
     case MYSQL_TYPE_VECTOR:
-      /* HNSW indexes reference VECTOR columns. Return pack_length(). */
-      return pack_length();
+      /* HNSW indexes use the full vector data as key, not blob overhead. */
+      return max_display_width_in_bytes();
     default: {
       return pack_length(is_array);
     }
