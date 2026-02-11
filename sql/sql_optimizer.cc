@@ -2336,6 +2336,8 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
       for (uint k = 0; k < table->s->keys; k++) {
         KEY *key = &table->key_info[k];
         if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+        /* Honor IGNORE INDEX / USE INDEX hints */
+        if (!table->keys_in_use_for_order_by.is_set(k)) continue;
         if (!ha_check_storage_engine_flag(table->file->ht,
                                           HTON_SUPPORTS_DISTANCE_SCAN))
           continue;
