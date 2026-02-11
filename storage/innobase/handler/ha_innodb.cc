@@ -10853,6 +10853,15 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   m_hnsw_scan.current_pos = 0;
   m_hnsw_scan.active = true;
 
+  /* HNSW_DEBUG: print first 10 results after sort */
+  fprintf(stderr, "HNSW_DEBUG: hnsw_index_read returned %zu results:\n",
+          m_hnsw_scan.results.size());
+  for (size_t i = 0; i < std::min(m_hnsw_scan.results.size(), (size_t)10); i++) {
+    fprintf(stderr, "  [%zu] pk=%lu dist=%.6f\n", i,
+            (unsigned long)m_hnsw_scan.results[i].first,
+            m_hnsw_scan.results[i].second);
+  }
+
   if (m_hnsw_scan.results.empty()) return HA_ERR_END_OF_FILE;
 
   /* Switch to clustered (PK) index for row lookups.
