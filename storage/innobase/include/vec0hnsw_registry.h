@@ -52,26 +52,28 @@ class HnswIndexRegistry {
   }
 
   /**
-    Register a pre-built index loaded from file. Takes ownership.
+    Register a pre-built index loaded from file. Takes shared ownership.
     @param table_name  Table name
     @param column_name Column name (empty for legacy)
-    @param index       Pre-built HnswIndex (moved)
+    @param index       Pre-built HnswIndex (shared)
     @param file_path   Path to the .hnsw file on disk
     @return true on success, false if index already exists
   */
   bool register_loaded_index(const std::string& table_name,
                              const std::string& column_name,
-                             std::unique_ptr<HnswIndex> index,
+                             std::shared_ptr<HnswIndex> index,
                              const std::string& file_path);
 
   /**
     Get an existing index for a table column.
+    Returns a shared_ptr that keeps the index alive even if it's
+    concurrently dropped from the registry by another thread.
     @param table_name  Table name
     @param column_name Column name (empty for legacy)
-    @return Pointer to index, or nullptr if not found
+    @return shared_ptr to index, or nullptr if not found
   */
-  HnswIndex* get_index(const std::string& table_name,
-                        const std::string& column_name = "");
+  std::shared_ptr<HnswIndex> get_index(const std::string& table_name,
+                                        const std::string& column_name = "");
 
   /**
     Drop (remove) an index for a table column.
@@ -158,9 +160,11 @@ class HnswIndexRegistry {
     return table_name + ":" + column_name;
   }
 
-  /** Entry in the registry: index + persistence metadata. */
+  /** Entry in the registry: index + persistence metadata.
+      Uses shared_ptr so that callers holding a reference keep the
+      index alive even after it is removed from the registry. */
   struct IndexEntry {
-    std::unique_ptr<HnswIndex> index;
+    std::shared_ptr<HnswIndex> index;
     std::string file_path;
   };
 

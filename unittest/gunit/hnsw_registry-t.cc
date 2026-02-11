@@ -37,7 +37,7 @@ class HnswRegistryTest : public ::testing::Test {
 TEST_F(HnswRegistryTest, RegisterAndGet) {
   EXPECT_TRUE(registry().register_index("test_table", "embedding", 128));
 
-  auto *idx = registry().get_index("test_table", "embedding");
+  auto idx = registry().get_index("test_table", "embedding");
   ASSERT_NE(nullptr, idx);
   EXPECT_EQ(128u, idx->config().dimensions);
 }
@@ -93,8 +93,8 @@ TEST_F(HnswRegistryTest, MultiColumnSameTable) {
   EXPECT_TRUE(registry().register_index("docs", "emb_image", 768));
 
   auto *idx1 = registry().get_index("docs", "emb_title");
-  auto *idx2 = registry().get_index("docs", "emb_body");
-  auto *idx3 = registry().get_index("docs", "emb_image");
+  auto idx2 = registry().get_index("docs", "emb_body");
+  auto idx3 = registry().get_index("docs", "emb_image");
 
   ASSERT_NE(nullptr, idx1);
   ASSERT_NE(nullptr, idx2);
@@ -135,7 +135,7 @@ TEST_F(HnswRegistryTest, LegacyMode) {
   // Register without column name (legacy)
   EXPECT_TRUE(registry().register_index("legacy_table", 128));
 
-  auto *idx = registry().get_index("legacy_table");
+  auto idx = registry().get_index("legacy_table");
   ASSERT_NE(nullptr, idx);
 
   // get_columns_for_table should return empty string for legacy entry
@@ -203,7 +203,7 @@ TEST_F(HnswRegistryTest, RegisterWithMetric) {
                             64, 16, 200,
                             innodb_vector::hnsw_metric_t::COSINE);
 
-  auto *idx = registry().get_index("metric_test", "vec");
+  auto idx = registry().get_index("metric_test", "vec");
   ASSERT_NE(nullptr, idx);
   EXPECT_EQ(innodb_vector::hnsw_metric_t::COSINE, idx->config().metric);
 }
@@ -214,7 +214,7 @@ TEST_F(HnswRegistryTest, ReregisterAfterDrop) {
 
   // Should be able to register again
   EXPECT_TRUE(registry().register_index("reuse", "v", 128));
-  auto *idx = registry().get_index("reuse", "v");
+  auto idx = registry().get_index("reuse", "v");
   ASSERT_NE(nullptr, idx);
   EXPECT_EQ(128u, idx->config().dimensions);
 }

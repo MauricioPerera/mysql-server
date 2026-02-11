@@ -8017,7 +8017,7 @@ int ha_innobase::open(const char *name, int, uint open_flags,
       std::string hnsw_path =
           hnsw_make_file_path(db.c_str(), tbl.c_str(), col);
       innodb_vector::hnsw_config_t cfg;
-      auto idx = std::make_unique<innodb_vector::HnswIndex>(cfg);
+      auto idx = std::make_shared<innodb_vector::HnswIndex>(cfg);
 
       if (idx->load_from_file(hnsw_path.c_str())) {
         /* File found: config restored from file header */
@@ -8075,7 +8075,7 @@ int ha_innobase::open(const char *name, int, uint open_flags,
       if (load_path.empty()) continue;
 
       innodb_vector::hnsw_config_t cfg;
-      auto idx = std::make_unique<innodb_vector::HnswIndex>(cfg);
+      auto idx = std::make_shared<innodb_vector::HnswIndex>(cfg);
       if (idx->load_from_file(load_path.c_str())) {
         hnsw_reg.register_loaded_index(tbl, col, std::move(idx), load_path);
       }
@@ -9644,7 +9644,7 @@ int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
       Field *fld = key->key_part[0].field;
       std::string col_name(fld->field_name);
 
-      auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      auto hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
       if (!hnsw_idx) continue;
 
       if (!pk_extracted) {
@@ -10391,7 +10391,7 @@ int ha_innobase::update_row(const uchar *old_row, uchar *new_row) {
       Field *fld = key->key_part[0].field;
       std::string col_name(fld->field_name);
 
-      auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      auto hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
       if (!hnsw_idx) continue;
 
       if (!pk_extracted) {
@@ -10504,7 +10504,7 @@ int ha_innobase::delete_row(
       if (key->algorithm != HA_KEY_ALG_HNSW) continue;
 
       std::string col_name(key->key_part[0].field->field_name);
-      auto *hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      auto hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
       if (!hnsw_idx) continue;
 
       if (!pk_extracted) {
@@ -10829,7 +10829,7 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
       table_share->key_info[active_index].key_part[0].field->field_name;
 
   auto &reg = innodb_vector::HnswIndexRegistry::instance();
-  auto *hnsw = reg.get_index(tbl, col);
+  auto hnsw = reg.get_index(tbl, col);
   if (!hnsw) return HA_ERR_END_OF_FILE;
 
   /* Build query vector from raw float bytes */

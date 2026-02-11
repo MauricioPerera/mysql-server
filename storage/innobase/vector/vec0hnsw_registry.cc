@@ -38,7 +38,7 @@ bool HnswIndexRegistry::register_index(const std::string& table_name,
   config.metric = metric;
 
   IndexEntry entry;
-  entry.index = std::make_unique<HnswIndex>(config);
+  entry.index = std::make_shared<HnswIndex>(config);
   indexes_[key] = std::move(entry);
   return true;
 }
@@ -46,7 +46,7 @@ bool HnswIndexRegistry::register_index(const std::string& table_name,
 bool HnswIndexRegistry::register_loaded_index(
     const std::string& table_name,
     const std::string& column_name,
-    std::unique_ptr<HnswIndex> index,
+    std::shared_ptr<HnswIndex> index,
     const std::string& file_path) {
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -62,14 +62,15 @@ bool HnswIndexRegistry::register_loaded_index(
   return true;
 }
 
-HnswIndex* HnswIndexRegistry::get_index(const std::string& table_name,
-                                          const std::string& column_name) {
+std::shared_ptr<HnswIndex> HnswIndexRegistry::get_index(
+    const std::string& table_name,
+    const std::string& column_name) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string key = make_key(table_name, column_name);
   auto it = indexes_.find(key);
   if (it != indexes_.end()) {
-    return it->second.index.get();
+    return it->second.index;
   }
 
   /* When column is empty (legacy lookup), fall back to finding any
@@ -80,7 +81,7 @@ HnswIndex* HnswIndexRegistry::get_index(const std::string& table_name,
     std::string prefix = table_name + ":";
     for (const auto &pair : indexes_) {
       if (pair.first.compare(0, prefix.size(), prefix) == 0) {
-        return pair.second.index.get();
+        return pair.second.index;
       }
     }
   }
@@ -195,15 +196,24 @@ std::string HnswIndexRegistry::get_file_path(const std::string& table_name,
 }
 
 size_t HnswIndexRegistry::save_all_dirty() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  size_t saved = 0;
-  for (auto& pair : indexes_) {
-    auto& entry = pair.second;
-    if (entry.index && entry.index->is_dirty() && !entry.file_path.empty()) {
-      if (entry.index->save_to_file(entry.file_path.c_str())) {
-        entry.index->mark_clean();
-        ++saved;
+  /* Collect dirty indexes under the lock, then release it before
+     doing file I/O so that concurrent DML isn't blocked. */
+  std::vector<std::pair<std::shared_ptr<HnswIndex>, std::string>> to_save;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& pair : indexes_) {
+      auto& entry = pair.second;
+      if (entry.index && entry.index->is_dirty() && !entry.file_path.empty()) {
+        to_save.emplace_back(entry.index, entry.file_path);
       }
+    }
+  }
+
+  size_t saved = 0;
+  for (auto& [index, path] : to_save) {
+    if (index->save_to_file(path.c_str())) {
+      index->mark_clean();
+      ++saved;
     }
   }
   return saved;

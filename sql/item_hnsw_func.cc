@@ -230,7 +230,7 @@ String *Item_func_hnsw_save_index::val_str(String *) {
   }
 
   auto& registry = innodb_vector::HnswIndexRegistry::instance();
-  auto* index = registry.get_index(table_name, column_name);
+  auto index = registry.get_index(table_name, column_name);
 
   if (!index) {
     result_buffer.set_ascii("ERROR: Index not found", 22);
@@ -290,7 +290,7 @@ String *Item_func_hnsw_load_index::val_str(String *) {
   }
 
   auto& registry = innodb_vector::HnswIndexRegistry::instance();
-  auto* index = registry.get_index(table_name, column_name);
+  auto index = registry.get_index(table_name, column_name);
 
   if (!index) {
     result_buffer.set_ascii("ERROR: Index not found (create first)", 37);
@@ -341,7 +341,7 @@ String *Item_func_hnsw_info::val_str(String *) {
   }
 
   auto& registry = innodb_vector::HnswIndexRegistry::instance();
-  auto* index = registry.get_index(table_name, column_name);
+  auto index = registry.get_index(table_name, column_name);
 
   if (!index) {
     null_value = true;
