@@ -10837,12 +10837,19 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   std::vector<float> query(reinterpret_cast<const float *>(key_ptr),
                            reinterpret_cast<const float *>(key_ptr) + dims);
 
-  /* HNSW_DEBUG: print query vector */
-  fprintf(stderr, "HNSW_DEBUG: query key_len=%u dims=%u vec=[", key_len, dims);
-  for (uint i = 0; i < dims && i < 8; i++) {
-    fprintf(stderr, "%s%.4f", i > 0 ? ", " : "", query[i]);
+  /* HNSW_DEBUG: print query vector and key info */
+  {
+    KEY *ki = &table_share->key_info[active_index];
+    fprintf(stderr, "HNSW_DEBUG: key_length=%u kp0_length=%u "
+            "kp0_store_length=%u kp0_fieldnr=%u\n",
+            ki->key_length, ki->key_part[0].length,
+            ki->key_part[0].store_length, ki->key_part[0].fieldnr);
+    fprintf(stderr, "HNSW_DEBUG: query key_len=%u dims=%u vec=[", key_len, dims);
+    for (uint i = 0; i < dims && i < 8; i++) {
+      fprintf(stderr, "%s%.4f", i > 0 ? ", " : "", query[i]);
+    }
+    fprintf(stderr, "]\n");
   }
-  fprintf(stderr, "]\n");
 
   /* Execute HNSW KNN search.
   Use ef_search=200 for good recall. The LIMIT clause will stop
