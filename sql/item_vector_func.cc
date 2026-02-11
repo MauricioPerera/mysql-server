@@ -106,7 +106,7 @@ String *Item_func_vector_search::val_str(String *str) {
 
   // Lookup index from registry
   auto& registry = innodb_vector::HnswIndexRegistry::instance();
-  auto* index = registry.get_index(table_name, column_name);
+  auto index = registry.get_index(table_name, column_name);
 
   if (!index) {
     result_buffer.set_ascii(
