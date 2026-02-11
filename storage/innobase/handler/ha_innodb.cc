@@ -10837,6 +10837,13 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   std::vector<float> query(reinterpret_cast<const float *>(key_ptr),
                            reinterpret_cast<const float *>(key_ptr) + dims);
 
+  /* HNSW_DEBUG: print query vector */
+  fprintf(stderr, "HNSW_DEBUG: query key_len=%u dims=%u vec=[", key_len, dims);
+  for (uint i = 0; i < dims && i < 8; i++) {
+    fprintf(stderr, "%s%.4f", i > 0 ? ", " : "", query[i]);
+  }
+  fprintf(stderr, "]\n");
+
   /* Execute HNSW KNN search.
   Use ef_search=200 for good recall. The LIMIT clause will stop
   reading after k rows anyway. */
