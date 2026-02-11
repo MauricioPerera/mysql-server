@@ -195,6 +195,29 @@ std::string HnswIndexRegistry::get_file_path(const std::string& table_name,
   return "";
 }
 
+void HnswIndexRegistry::set_needs_reconcile(const std::string& table_name,
+                                             const std::string& column_name,
+                                             bool flag) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::string key = make_key(table_name, column_name);
+  auto it = indexes_.find(key);
+  if (it != indexes_.end()) {
+    it->second.needs_reconcile = flag;
+  }
+}
+
+bool HnswIndexRegistry::check_and_clear_reconcile(
+    const std::string& table_name, const std::string& column_name) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::string key = make_key(table_name, column_name);
+  auto it = indexes_.find(key);
+  if (it != indexes_.end() && it->second.needs_reconcile) {
+    it->second.needs_reconcile = false;
+    return true;
+  }
+  return false;
+}
+
 size_t HnswIndexRegistry::save_all_dirty() {
   /* Collect dirty indexes under the lock, then release it before
      doing file I/O so that concurrent DML isn't blocked. */

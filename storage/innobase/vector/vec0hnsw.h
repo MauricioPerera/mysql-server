@@ -144,6 +144,12 @@ class HnswIndex {
   */
   bool contains(uint64_t id) const;
 
+  /**
+    Get all external IDs currently in the index (active, non-deleted).
+    Used for crash recovery reconciliation.
+  */
+  std::vector<uint64_t> get_all_ids() const;
+
   /** Check if the index has been modified since last save/load. */
   bool is_dirty() const { return dirty_.load(std::memory_order_relaxed); }
 

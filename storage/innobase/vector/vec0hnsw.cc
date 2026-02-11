@@ -559,6 +559,19 @@ bool HnswIndex::contains(uint64_t id) const {
   return id_to_idx_.count(id) > 0;
 }
 
+std::vector<uint64_t> HnswIndex::get_all_ids() const {
+  std::shared_lock<std::shared_mutex> lock(index_mutex_);
+  std::vector<uint64_t> ids;
+  ids.reserve(active_elements_);
+  for (const auto &pair : id_to_idx_) {
+    uint64_t idx = pair.second;
+    if (idx < nodes_.size() && !nodes_[idx].deleted) {
+      ids.push_back(pair.first);
+    }
+  }
+  return ids;
+}
+
 uint64_t HnswIndex::size() const {
   std::shared_lock<std::shared_mutex> lock(index_mutex_);
   return active_elements_;

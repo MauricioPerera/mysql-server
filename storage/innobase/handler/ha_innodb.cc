@@ -216,6 +216,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #ifdef HAVE_UNISTD_H
@@ -7513,6 +7514,90 @@ void ha_innobase::innobase_initialize_autoinc() {
   dict_table_autoinc_initialize(m_prebuilt->table, auto_inc);
 }
 
+/**
+  HNSW crash recovery: reconcile an in-memory HNSW index with the actual
+  InnoDB table contents.  After a crash the .hnsw file may be stale (missing
+  rows that were committed to InnoDB, or containing rows that were rolled
+  back).  This function performs a single table scan, re-inserts missing
+  vectors and removes stale HNSW entries.
+
+  Called once per HNSW index during the first table open after server start.
+
+  @param handler      ha_innobase instance (already positioned on the table)
+  @param tbl_table    TABLE pointer with field descriptors
+  @param tbl          bare table name
+  @param col          VECTOR column name
+  @param vec_field    the VECTOR Field pointer
+  @param pk           KEY for the primary key
+  @param hnsw         the loaded HnswIndex to reconcile
+*/
+static void hnsw_reconcile(ha_innobase *handler, TABLE *tbl_table,
+                           const std::string &tbl, const std::string &col,
+                           Field *vec_field, KEY *pk,
+                           std::shared_ptr<innodb_vector::HnswIndex> hnsw) {
+  /* Collect all external IDs currently in the HNSW graph */
+  auto hnsw_ids_vec = hnsw->get_all_ids();
+  std::unordered_set<uint64_t> hnsw_set(hnsw_ids_vec.begin(),
+                                         hnsw_ids_vec.end());
+  std::unordered_set<uint64_t> table_ids;
+  bool changed = false;
+
+  Field *pk_field = tbl_table->field[pk->key_part[0].fieldnr - 1];
+
+  /* Full table scan */
+  if (handler->ha_rnd_init(true) != 0) return;
+
+  uchar *buf = tbl_table->record[0];
+  int err;
+  uint64_t insert_count = 0;
+  uint64_t remove_count = 0;
+  while ((err = handler->ha_rnd_next(buf)) == 0) {
+    uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
+    table_ids.insert(row_id);
+
+    if (!hnsw->contains(row_id)) {
+      /* Row exists in InnoDB but missing from HNSW — re-insert */
+      String vec_buf;
+      vec_field->val_str(&vec_buf);
+      if (vec_buf.length() >= sizeof(float)) {
+        const float *ptr =
+            reinterpret_cast<const float *>(vec_buf.ptr());
+        size_t dims = vec_buf.length() / sizeof(float);
+        std::vector<float> vec_data(ptr, ptr + dims);
+        hnsw->insert(row_id, vec_data);
+        insert_count++;
+        changed = true;
+      }
+    }
+  }
+  handler->ha_rnd_end();
+
+  /* Remove HNSW entries whose rows no longer exist in the table */
+  for (uint64_t id : hnsw_ids_vec) {
+    if (table_ids.find(id) == table_ids.end()) {
+      hnsw->remove(id);
+      remove_count++;
+      changed = true;
+    }
+  }
+
+  if (insert_count > 0 || remove_count > 0) {
+    ib::info(ER_IB_MSG_1) << "HNSW reconcile " << tbl << "." << col
+                           << ": inserted " << insert_count
+                           << ", removed " << remove_count;
+  }
+
+  /* Persist the repaired index */
+  if (changed) {
+    auto &reg = innodb_vector::HnswIndexRegistry::instance();
+    std::string path = reg.get_file_path(tbl, col);
+    if (!path.empty()) {
+      hnsw->save_to_file(path.c_str());
+      hnsw->mark_clean();
+    }
+  }
+}
+
 /** Open an InnoDB table.
 @param[in]      name            table name
 @param[in]      open_flags      flags for opening table from SQL-layer.
@@ -7997,6 +8082,10 @@ int ha_innobase::open(const char *name, int, uint open_flags,
     bool dd_handled[MAX_KEY] = {};
     uint dd_handled_count = 0;
 
+    /* Track columns whose HNSW index was loaded from file this open() call.
+       These are candidates for crash recovery reconciliation. */
+    std::vector<std::pair<std::string, Field *>> loaded_from_file;
+
     /* Pass 1: Load indexes from DD metadata (key_info with HA_KEY_ALG_HNSW) */
     for (uint k = 0; k < table->s->keys; k++) {
       KEY *key = &table->s->key_info[k];
@@ -8033,6 +8122,7 @@ int ha_innobase::open(const char *name, int, uint open_flags,
       if (idx->load_from_file(hnsw_path.c_str())) {
         /* File found: config restored from file header */
         hnsw_reg.register_loaded_index(tbl, col, std::move(idx), hnsw_path);
+        loaded_from_file.emplace_back(col, key->key_part[0].field);
       } else {
         /* .hnsw file missing or corrupt: register empty index from COMMENT.
            Future INSERTs will populate it via write_row hook. */
@@ -8089,7 +8179,16 @@ int ha_innobase::open(const char *name, int, uint open_flags,
       auto idx = std::make_shared<innodb_vector::HnswIndex>(cfg);
       if (idx->load_from_file(load_path.c_str())) {
         hnsw_reg.register_loaded_index(tbl, col, std::move(idx), load_path);
+        loaded_from_file.emplace_back(col, fld);
       }
+    }
+
+    /* HNSW Crash Recovery: mark indexes loaded from file as needing
+       reconciliation.  The actual reconciliation happens lazily on the
+       first HNSW search query, when the handler is fully open and
+       ha_rnd_init / ha_rnd_next are safe to call. */
+    for (const auto &[col_name, vec_field] : loaded_from_file) {
+      hnsw_reg.set_needs_reconcile(tbl, col_name, true);
     }
   }
 
@@ -10842,6 +10941,19 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   auto &reg = innodb_vector::HnswIndexRegistry::instance();
   auto hnsw = reg.get_index(tbl, col);
   if (!hnsw) return HA_ERR_END_OF_FILE;
+
+  /* Lazy crash recovery: reconcile HNSW index with InnoDB data on first
+     search after loading from a stale .hnsw file. */
+  if (reg.check_and_clear_reconcile(tbl, col)) {
+    if (table->s->primary_key != MAX_KEY) {
+      KEY *pk = &table->key_info[table->s->primary_key];
+      /* Use table->key_info (bound to record buffer), NOT table_share */
+      Field *vec_field =
+          table->key_info[active_index].key_part[0].field;
+      hnsw_reconcile(this, table, std::string(tbl), std::string(col),
+                     vec_field, pk, hnsw);
+    }
+  }
 
   /* Build query vector from raw float bytes */
   uint dims = key_len / sizeof(float);

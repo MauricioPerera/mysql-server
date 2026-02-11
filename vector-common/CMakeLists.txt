@@ -6,7 +6,7 @@ ADD_CONVENIENCE_LIBRARY(vector_common ${VECTOR_COMMON_SOURCES})
 TARGET_LINK_LIBRARIES(vector_common mysys)
 
 # Optional AVX2+FMA SIMD for vector distance calculations
-OPTION(WITH_VECTOR_AVX2 "Enable AVX2+FMA SIMD for vector operations" OFF)
+OPTION(WITH_VECTOR_AVX2 "Enable AVX2+FMA SIMD for vector operations" ON)
 
 IF(WITH_VECTOR_AVX2)
   MY_ADD_COMPILE_DEFINITIONS(vector_operations.cc

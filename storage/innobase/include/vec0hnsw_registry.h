@@ -136,6 +136,20 @@ class HnswIndexRegistry {
   static const char* metric_to_string(hnsw_metric_t metric);
 
   /**
+    Mark an index as needing crash recovery reconciliation.
+    Called during open() when an index is loaded from a stale .hnsw file.
+  */
+  void set_needs_reconcile(const std::string& table_name,
+                           const std::string& column_name, bool flag);
+
+  /**
+    Check and atomically clear the reconciliation flag.
+    @return true if reconciliation was needed (and flag is now cleared)
+  */
+  bool check_and_clear_reconcile(const std::string& table_name,
+                                  const std::string& column_name);
+
+  /**
     Parse HNSW parameters from an index COMMENT string.
     Supported format: "M=16,ef=200,metric=cosine"
     @param[in]   comment           Comment string (may be NULL)
@@ -166,6 +180,7 @@ class HnswIndexRegistry {
   struct IndexEntry {
     std::shared_ptr<HnswIndex> index;
     std::string file_path;
+    bool needs_reconcile{false};
   };
 
   std::mutex mutex_;
