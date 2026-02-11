@@ -3999,6 +3999,15 @@ bool CostingReceiver::ProposeDistanceIndexScan(
   double cost;
 
   assert(!table->covering_keys.is_set(key_idx));
+
+  if (table->key_info[key_idx].algorithm == HA_KEY_ALG_HNSW) {
+    // HNSW graph search returns at most ef_search candidates (typically
+    // 10-1000), not all rows.  Use a bounded estimate so the optimizer
+    // sees a realistic cost and can prefer HNSW + FILTER over a primary
+    // key range scan + sort when WHERE predicates are present.
+    num_output_rows = std::min(num_output_rows, 200.0);
+  }
+
   // Same cost estimation for index scan and distance index scan.
   cost = table->file->read_cost(key_idx, /*ranges=*/1.0, num_output_rows)
              .total_cost();

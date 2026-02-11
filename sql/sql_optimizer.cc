@@ -2327,7 +2327,7 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
   if (!join->order.empty() && join->simple_order) {
     Item_func_vector_distance *vd_func =
         test_if_vector_distance_order(order.order);
-    if (vd_func && select_limit != HA_POS_ERROR && !tab->condition()) {
+    if (vd_func && select_limit != HA_POS_ERROR) {
       /* Find which argument is the indexed column and which is the query
          vector constant. */
       Item *arg0 = vd_func->arguments()[0];
@@ -2370,6 +2370,8 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
         const uchar *vec_bytes =
             reinterpret_cast<const uchar *>(vec_str->ptr());
         uint vec_len = vec_str->length();
+
+        if (no_changes) return true;  /* Probe: yes, distance scan works */
 
         /* Build QUICK_RANGE with query vector */
         QUICK_RANGE *range = new (thd->mem_root) QUICK_RANGE(
