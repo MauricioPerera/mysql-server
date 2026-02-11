@@ -535,8 +535,8 @@ static bool build_hnsw_index_from_table(ha_innobase *handler, TABLE *table,
     return true;
   }
 
-  auto *hnsw_idx = registry.get_index(std::string(table_name),
-                                       std::string(col_name));
+  auto hnsw_idx = registry.get_index(std::string(table_name),
+                                      std::string(col_name));
   if (!hnsw_idx) {
     ib::error() << "HNSW build: get_index returned null after register";
     return true;
