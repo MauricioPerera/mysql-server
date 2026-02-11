@@ -1111,6 +1111,17 @@ static MYSQL_THDVAR_ULONG(lock_wait_timeout, PLUGIN_VAR_RQCMDARG,
                           "100000000 disable the timeout.",
                           nullptr, nullptr, 50, 1, 1024 * 1024 * 1024, 0);
 
+static MYSQL_THDVAR_ULONG(
+    hnsw_ef_search, PLUGIN_VAR_RQCMDARG,
+    "Number of candidates to explore during HNSW vector index search. "
+    "Higher values improve recall but increase latency. "
+    "Applies to ORDER BY VECTOR_DISTANCE(...) LIMIT k queries.",
+    nullptr, nullptr,
+    200,    /* Default */
+    1,      /* Minimum */
+    10000,  /* Maximum */
+    0);
+
 static MYSQL_THDVAR_STR(
     ft_user_stopword_table, PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_MEMALLOC,
     "User supplied stopword table name, effective in the session level.",
@@ -10838,9 +10849,10 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
                            reinterpret_cast<const float *>(key_ptr) + dims);
 
   /* Execute HNSW KNN search.
-  Use ef_search=200 for good recall. The LIMIT clause will stop
-  reading after k rows anyway. */
-  auto results = hnsw->search(query, 200, 0);
+  ef_search controls the recall/speed tradeoff: higher = better recall.
+  The session variable innodb_hnsw_ef_search allows per-query tuning. */
+  size_t ef = THDVAR(ha_thd(), hnsw_ef_search);
+  auto results = hnsw->search(query, ef, 0);
 
   /* Cache results for iteration, sorted by distance ascending */
   m_hnsw_scan.results.clear();
@@ -24106,6 +24118,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(ft_sort_pll_degree),
     MYSQL_SYSVAR(force_load_corrupted),
     MYSQL_SYSVAR(hnsw_flush_interval),
+    MYSQL_SYSVAR(hnsw_ef_search),
     MYSQL_SYSVAR(lock_wait_timeout),
     MYSQL_SYSVAR(deadlock_detect),
     MYSQL_SYSVAR(page_size),

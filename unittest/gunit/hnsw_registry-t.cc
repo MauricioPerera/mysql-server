@@ -92,7 +92,7 @@ TEST_F(HnswRegistryTest, MultiColumnSameTable) {
   EXPECT_TRUE(registry().register_index("docs", "emb_body", 512));
   EXPECT_TRUE(registry().register_index("docs", "emb_image", 768));
 
-  auto *idx1 = registry().get_index("docs", "emb_title");
+  auto idx1 = registry().get_index("docs", "emb_title");
   auto idx2 = registry().get_index("docs", "emb_body");
   auto idx3 = registry().get_index("docs", "emb_image");
 
