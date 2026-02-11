@@ -10842,12 +10842,14 @@ int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
   reading after k rows anyway. */
   auto results = hnsw->search(query, 200, 0);
 
-  /* Cache results for iteration */
+  /* Cache results for iteration, sorted by distance ascending */
   m_hnsw_scan.results.clear();
   m_hnsw_scan.results.reserve(results.size());
   for (auto &r : results) {
     m_hnsw_scan.results.push_back({r.id, r.distance});
   }
+  std::sort(m_hnsw_scan.results.begin(), m_hnsw_scan.results.end(),
+            [](const auto &a, const auto &b) { return a.second < b.second; });
   m_hnsw_scan.current_pos = 0;
   m_hnsw_scan.active = true;
 
