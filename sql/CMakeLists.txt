@@ -410,6 +410,8 @@ SET(SQL_SHARED_SOURCES
   item_regexp_func.cc
   item_row.cc
   item_strfunc.cc
+  item_vector_func.cc
+  item_hnsw_func.cc
   item_subselect.cc
   item_sum.cc
   window.cc
@@ -1483,3 +1485,4 @@ ADD_CUSTOM_TARGET(distclean
 ADD_CUSTOM_TARGET(show-dist-name
   COMMAND ${CMAKE_COMMAND} -E echo "${CPACK_PACKAGE_FILE_NAME}"
 )
+TARGET_LINK_LIBRARIES(sql_main vector_common innobase_vector)

@@ -1,0 +1,18 @@
+# storage/innobase/vector/CMakeLists.txt
+# HNSW Vector Index module for InnoDB
+
+SET(VECTOR_SOURCES
+  vec0hnsw.cc
+  vec0hnsw_registry.cc
+)
+
+ADD_CONVENIENCE_LIBRARY(innobase_vector
+  ${VECTOR_SOURCES}
+)
+
+TARGET_INCLUDE_DIRECTORIES(innobase_vector PRIVATE
+  ${CMAKE_SOURCE_DIR}/storage/innobase/vector
+  ${CMAKE_SOURCE_DIR}/storage/innobase/include
+)
+
+TARGET_LINK_LIBRARIES(innobase_vector vector_common)

@@ -237,6 +237,7 @@ class Item_func : public Item_result_field {
     SP_EQUALS_FUNC,
     SP_DISJOINT_FUNC,
     SP_DISTANCE_FUNC,
+    VECTOR_DISTANCE_FUNC,
     SP_INTERSECTS_FUNC,
     SP_TOUCHES_FUNC,
     SP_CROSSES_FUNC,
@@ -1855,6 +1856,49 @@ class Item_func_vector_dim : public Item_int_func {
     return false;
   }
 };
+
+
+// Vector distance functions
+class Item_func_l2_distance : public Item_real_func {
+ private:
+  String value1, value2;
+ public:
+  Item_func_l2_distance(const POS &pos, Item *a, Item *b) : Item_real_func(pos, a, b) {}
+  bool resolve_type(THD *thd) override;
+  double val_real() override;
+  const char *func_name() const override { return "l2_distance"; }
+};
+
+class Item_func_cosine_distance : public Item_real_func {
+ private:
+  String value1, value2;
+ public:
+  Item_func_cosine_distance(const POS &pos, Item *a, Item *b) : Item_real_func(pos, a, b) {}
+  bool resolve_type(THD *thd) override;
+  double val_real() override;
+  const char *func_name() const override { return "cosine_distance"; }
+};
+
+class Item_func_cosine_similarity : public Item_real_func {
+ private:
+  String value1, value2;
+ public:
+  Item_func_cosine_similarity(const POS &pos, Item *a, Item *b) : Item_real_func(pos, a, b) {}
+  bool resolve_type(THD *thd) override;
+  double val_real() override;
+  const char *func_name() const override { return "cosine_similarity"; }
+};
+
+class Item_func_dot_product : public Item_real_func {
+ private:
+  String value1, value2;
+ public:
+  Item_func_dot_product(const POS &pos, Item *a, Item *b) : Item_real_func(pos, a, b) {}
+  bool resolve_type(THD *thd) override;
+  double val_real() override;
+  const char *func_name() const override { return "dot_product"; }
+};
+
 
 class Item_func_bit_length final : public Item_func_length {
  public:
@@ -4229,7 +4273,29 @@ extern bool volatile mqh_used;
 /// Checks if "item" is a function of the specified type.
 bool is_function_of_type(const Item *item, Item_func::Functype type);
 
+/**
+  Function: VECTOR_DISTANCE(vector1, vector2, metric)
+  Calcula distancia entre dos vectores usando m??trica especificada.
+  M??tricas soportadas: 'L2', 'COSINE'
+*/
+class Item_func_vector_distance : public Item_real_func {
+ private:
+  String value1, value2;
+  
+ public:
+  Item_func_vector_distance(const POS &pos, PT_item_list *list)
+      : Item_real_func(pos, list) {}
+  
+  double val_real() override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "vector_distance"; }
+  enum Functype functype() const override { return VECTOR_DISTANCE_FUNC; }
+};
+
 /// Checks if "item" contains a function of the specified type.
 bool contains_function_of_type(Item *item, Item_func::Functype type);
+
+
+
 
 #endif /* ITEM_FUNC_INCLUDED */

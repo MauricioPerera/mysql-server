@@ -70,7 +70,8 @@ Indexes::Indexes() {
                          "  'BTREE',\n"
                          "  'RTREE',\n"
                          "  'HASH',\n"
-                         "  'FULLTEXT'\n"
+                         "  'FULLTEXT',\n"
+                         "  'HNSW'\n"
                          ") NOT NULL");
   m_target_def.add_field(FIELD_IS_ALGORITHM_EXPLICIT,
                          "FIELD_IS_ALGORITHM_EXPLICIT",

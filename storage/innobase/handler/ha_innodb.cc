@@ -196,6 +196,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0mem.h"
 #include "ut0test.h"
 #include "ut0ut.h"
+#include "vec0hnsw_registry.h"
+#include <fstream>  /* For HNSW auto-persistence file existence checks */
 #else
 #include <typelib.h>
 #include "buf0types.h"
@@ -214,6 +216,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #ifdef HAVE_UNISTD_H
@@ -1109,6 +1112,17 @@ static MYSQL_THDVAR_ULONG(lock_wait_timeout, PLUGIN_VAR_RQCMDARG,
                           "100000000 disable the timeout.",
                           nullptr, nullptr, 50, 1, 1024 * 1024 * 1024, 0);
 
+static MYSQL_THDVAR_ULONG(
+    hnsw_ef_search, PLUGIN_VAR_RQCMDARG,
+    "Number of candidates to explore during HNSW vector index search. "
+    "Higher values improve recall but increase latency. "
+    "Applies to ORDER BY VECTOR_DISTANCE(...) LIMIT k queries.",
+    nullptr, nullptr,
+    200,    /* Default */
+    1,      /* Minimum */
+    10000,  /* Maximum */
+    0);
+
 static MYSQL_THDVAR_STR(
     ft_user_stopword_table, PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_MEMALLOC,
     "User supplied stopword table name, effective in the session level.",
@@ -1658,6 +1672,32 @@ static int innodb_shutdown(handlerton *, ha_panic_function) {
   return 0;
 }
 
+/**
+  Construct the .hnsw file path for a table's VECTOR column index.
+  Uses the MySQL data directory (datadir/schema/table[.column].hnsw).
+  @param db_name     Schema/database name
+  @param table_name  Table name (bare, no schema)
+  @param column_name Column name (empty for legacy single-index)
+  @return Full path to the .hnsw file
+*/
+std::string hnsw_make_file_path(const char *db_name,
+                                const char *table_name,
+                                const std::string &column_name) {
+  std::string path(MySQL_datadir_path);
+  if (!path.empty() && path.back() != '/' && path.back() != '\\') {
+    path.push_back(FN_LIBCHAR);
+  }
+  path.append(db_name);
+  path.push_back(FN_LIBCHAR);
+  path.append(table_name);
+  if (!column_name.empty()) {
+    path.push_back('.');
+    path.append(column_name);
+  }
+  path.append(".hnsw");
+  return path;
+}
+
 /** Shut down all InnoDB background tasks that may access
 the Global Data Dictionary, before the Global Data Dictionary
 and the rest of InnoDB have been shut down.
@@ -1665,6 +1705,12 @@ and the rest of InnoDB have been shut down.
 @see innodb_shutdown() */
 static void innodb_pre_dd_shutdown(handlerton *) {
   if (innodb_inited) {
+    /* HNSW: auto-save all dirty indexes before shutdown */
+    {
+      auto &reg = innodb_vector::HnswIndexRegistry::instance();
+      reg.save_all_dirty();
+    }
+
     srv_pre_dd_shutdown();
   }
 }
@@ -3197,6 +3243,14 @@ void ha_innobase::reset_template(void) {
   }
 }
 
+void ha_innobase::force_template_rebuild() {
+  m_prebuilt->sql_stat_start = 1;
+  m_prebuilt->hint_need_to_fetch_extra_cols = ROW_RETRIEVE_ALL_COLS;
+  m_prebuilt->read_just_key = 0;
+  m_prebuilt->template_type = ROW_MYSQL_NO_TEMPLATE;
+  build_template(true);
+}
+
 /** Call this when you have opened a new table handle in HANDLER, before you
  call index_read_map() etc. Actually, we can let the cursor stay open even
  over a transaction commit! Then you should call this before every operation,
@@ -4392,7 +4446,7 @@ static void innobase_page_track_get_status(
 }
 
 /** Gives the file extension of an InnoDB single-table tablespace. */
-static const char *ha_innobase_exts[] = {dot_ext[IBD], NullS};
+static const char *ha_innobase_exts[] = {dot_ext[IBD], ".hnsw", NullS};
 
 /** This function checks if the given db.tablename is a system table
  supported by Innodb and is used as an initializer for the data member
@@ -5446,7 +5500,8 @@ static int innodb_init(void *p) {
                          HTON_CAN_RECREATE | HTON_SUPPORTS_SECONDARY_ENGINE |
                          HTON_SUPPORTS_TABLE_ENCRYPTION |
                          HTON_SUPPORTS_GENERATED_INVISIBLE_PK |
-                         HTON_SUPPORTS_BULK_LOAD | HTON_SUPPORTS_SQL_FK;
+                         HTON_SUPPORTS_BULK_LOAD | HTON_SUPPORTS_SQL_FK |
+                         HTON_SUPPORTS_DISTANCE_SCAN;
   // TODO(WL9440): to be enabled when distance scan is implemented in innodb.
   //| HTON_SUPPORTS_DISTANCE_SCAN;
 
@@ -6645,6 +6700,10 @@ ulong ha_innobase::index_flags(uint key, uint, bool) const {
     return (0);
   }
 
+  if (table_share->key_info[key].algorithm == HA_KEY_ALG_HNSW) {
+    return HA_READ_NEXT;  /* Support forward iteration for distance scan */
+  }
+
   ulong flags = HA_READ_NEXT | HA_READ_PREV | HA_READ_ORDER | HA_READ_RANGE |
                 HA_KEYREAD_ONLY | HA_DO_INDEX_COND_PUSHDOWN;
 
@@ -7223,11 +7282,22 @@ static bool innobase_build_index_translation(
   ulint ib_num_index = UT_LIST_GET_LEN(ib_table->indexes);
   dict_index_t **index_mapping = share->idx_trans_tbl.index_mapping;
 
+  /* Count HNSW indexes which have no InnoDB B-tree representation.
+  These are managed by HnswIndexRegistry, not InnoDB's internal
+  dictionary, so they don't appear in ib_table->indexes. */
+  ulint hnsw_index_count = 0;
+  for (ulint i = 0; i < mysql_num_index; i++) {
+    if (table->key_info[i].algorithm == HA_KEY_ALG_HNSW) {
+      hnsw_index_count++;
+    }
+  }
+  ulint mysql_btree_index_count = mysql_num_index - hnsw_index_count;
+
   /* If there exists inconsistency between MySQL and InnoDB dictionary
   (metadata) information, the number of index defined in MySQL
   could exceed that in InnoDB, do not build index translation
   table in such case */
-  if (ib_num_index < mysql_num_index) {
+  if (ib_num_index < mysql_btree_index_count) {
     ret = false;
     goto func_exit;
   }
@@ -7262,6 +7332,14 @@ static bool innobase_build_index_translation(
   corresponding InnoDB index pointer into index_mapping
   array. */
   for (ulint count = 0; count < mysql_num_index; count++) {
+    /* HNSW indexes have no B-tree representation in InnoDB.
+    Store NULL in the translation table — lookups are handled
+    via HnswIndexRegistry, not through dict_index_t. */
+    if (table->key_info[count].algorithm == HA_KEY_ALG_HNSW) {
+      index_mapping[count] = nullptr;
+      continue;
+    }
+
     /* Fetch index pointers into index_mapping according to mysql
     index sequence */
     index_mapping[count] =
@@ -7442,6 +7520,143 @@ void ha_innobase::innobase_initialize_autoinc() {
   }
 
   dict_table_autoinc_initialize(m_prebuilt->table, auto_inc);
+}
+
+/**
+  HNSW crash recovery: reconcile an in-memory HNSW index with the actual
+  InnoDB table contents.  After a crash the .hnsw file may be stale (missing
+  rows that were committed to InnoDB, or containing rows that were rolled
+  back).  This function performs a single table scan, re-inserts missing
+  vectors and removes stale HNSW entries.
+
+  Called once per HNSW index during the first table open after server start.
+
+  @param handler      ha_innobase instance (already positioned on the table)
+  @param tbl_table    TABLE pointer with field descriptors
+  @param tbl          bare table name
+  @param col          VECTOR column name
+  @param vec_field    the VECTOR Field pointer
+  @param pk           KEY for the primary key
+  @param hnsw         the loaded HnswIndex to reconcile
+*/
+static void hnsw_reconcile(ha_innobase *handler, TABLE *tbl_table,
+                           const std::string &tbl, const std::string &col,
+                           Field *vec_field, KEY *pk,
+                           std::shared_ptr<innodb_vector::HnswIndex> hnsw) {
+  /* Detect whether the HNSW graph matches InnoDB by scanning the table
+     and comparing row count, IDs, and vectors.  If any mismatch is found,
+     rebuild the entire index from scratch so the graph structure is optimal. */
+
+  auto hnsw_ids_vec = hnsw->get_all_ids();
+  std::unordered_set<uint64_t> hnsw_set(hnsw_ids_vec.begin(),
+                                         hnsw_ids_vec.end());
+
+  Field *pk_field = tbl_table->field[pk->key_part[0].fieldnr - 1];
+
+  /* Find the VECTOR field by name in table->field[] to ensure we read from
+     the correct record buffer location during the table scan.  Using the
+     field pointer from KEY_PART_INFO may read stale BLOB pointer data. */
+  Field *scan_vec_field = nullptr;
+  for (uint fi = 0; fi < tbl_table->s->fields; fi++) {
+    if (tbl_table->field[fi]->type() == MYSQL_TYPE_VECTOR &&
+        strcmp(tbl_table->field[fi]->field_name, col.c_str()) == 0) {
+      scan_vec_field = tbl_table->field[fi];
+      break;
+    }
+  }
+  if (!scan_vec_field) return;
+
+  /* Ensure all columns (including VECTOR blobs) are fetched during scan.
+     The HNSW distance scan template may not include the VECTOR column
+     because HNSW computes distances internally.  We need the raw vector
+     data for reconciliation, so:
+     1) Set read_set to all_set so InnoDB's build_template includes VECTOR
+     2) Call ha_rnd_init first (sets prebuilt->index to clustered)
+     3) Force template rebuild AFTER index is set */
+  MY_BITMAP *saved_read_set = tbl_table->read_set;
+  tbl_table->read_set = &tbl_table->s->all_set;
+
+  /* Pass 1: Collect all rows from InnoDB and check for mismatches */
+  if (handler->ha_rnd_init(true) != 0) {
+    tbl_table->read_set = saved_read_set;
+    return;
+  }
+  /* Now force whole-row template rebuild on the clustered index */
+  handler->force_template_rebuild();
+
+  struct row_data_t {
+    uint64_t id;
+    std::vector<float> vec;
+  };
+  std::vector<row_data_t> rows;
+  bool needs_rebuild = false;
+
+  uchar *buf = tbl_table->record[0];
+  int err;
+  while ((err = handler->ha_rnd_next(buf)) == 0) {
+    uint64_t row_id = static_cast<uint64_t>(pk_field->val_int());
+
+    String vec_buf;
+    scan_vec_field->val_str(&vec_buf);
+    if (vec_buf.length() < sizeof(float)) continue;
+
+    const float *ptr = reinterpret_cast<const float *>(vec_buf.ptr());
+    size_t dims = vec_buf.length() / sizeof(float);
+    std::vector<float> vec_data(ptr, ptr + dims);
+
+    if (!needs_rebuild) {
+      if (!hnsw->contains(row_id)) {
+        needs_rebuild = true;
+      } else {
+        const std::vector<float> *stored = hnsw->get_vector(row_id);
+        if (!stored || *stored != vec_data) {
+          needs_rebuild = true;
+        }
+      }
+    }
+
+    rows.push_back({row_id, std::move(vec_data)});
+  }
+  handler->ha_rnd_end();
+  tbl_table->read_set = saved_read_set;
+  handler->force_template_rebuild();
+
+  /* Check for stale HNSW entries (IDs in graph but not in table) */
+  if (!needs_rebuild) {
+    for (uint64_t id : hnsw_ids_vec) {
+      bool found = false;
+      for (const auto &r : rows) {
+        if (r.id == id) { found = true; break; }
+      }
+      if (!found) { needs_rebuild = true; break; }
+    }
+  }
+
+  if (!needs_rebuild) return;
+
+  /* Rebuild the entire HNSW index from scratch */
+  auto cfg = hnsw->config();
+  cfg.max_elements = std::max(cfg.max_elements,
+                              static_cast<uint32_t>(rows.size() * 2));
+  auto fresh = std::make_shared<innodb_vector::HnswIndex>(cfg);
+
+  for (const auto &r : rows) {
+    fresh->insert(r.id, r.vec);
+  }
+
+  ib::info(ER_IB_MSG_1) << "HNSW reconcile " << tbl << "." << col
+                         << ": rebuilt index with " << rows.size()
+                         << " vectors (was " << hnsw_ids_vec.size() << ")";
+
+  /* Replace the index in the registry */
+  auto &reg = innodb_vector::HnswIndexRegistry::instance();
+  std::string path = reg.get_file_path(tbl, col);
+  reg.replace_index(tbl, col, fresh);
+
+  if (!path.empty()) {
+    fresh->save_to_file(path.c_str());
+    fresh->mark_clean();
+  }
 }
 
 /** Open an InnoDB table.
@@ -7914,6 +8129,127 @@ int ha_innobase::open(const char *name, int, uint open_flags,
 
   if (m_prebuilt->table->is_fts_aux()) {
     dict_table_close(m_prebuilt->table, false, false);
+  }
+
+  /* HNSW Vector Index: DD-aware auto-load on table open.
+     Pass 1: Load indexes declared in DD (CREATE INDEX ... USING HNSW).
+     Pass 2: Legacy load for SQL-function-created indexes (.hnsw files). */
+  {
+    auto &hnsw_reg = innodb_vector::HnswIndexRegistry::instance();
+    std::string tbl(table->s->table_name.str);
+    std::string db(table->s->db.str);
+
+    /* Track which VECTOR columns have DD-declared HNSW indexes */
+    bool dd_handled[MAX_KEY] = {};
+    uint dd_handled_count = 0;
+
+    /* Track columns whose HNSW index was loaded from file this open() call.
+       These are candidates for crash recovery reconciliation. */
+    std::vector<std::pair<std::string, Field *>> loaded_from_file;
+
+    /* Pass 1: Load indexes from DD metadata (key_info with HA_KEY_ALG_HNSW) */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->s->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+      if (key->user_defined_key_parts < 1) continue;
+
+      std::string col(key->key_part[0].field->field_name);
+
+      /* Mark this column's field index as handled */
+      for (uint fi = 0; fi < table->s->fields; fi++) {
+        if (table->field[fi] == key->key_part[0].field) {
+          if (fi < MAX_KEY) dd_handled[fi] = true;
+          break;
+        }
+      }
+      dd_handled_count++;
+
+      /* Already in registry? Just ensure file_path is set. */
+      if (hnsw_reg.has_index(tbl, col)) {
+        if (hnsw_reg.get_file_path(tbl, col).empty()) {
+          hnsw_reg.set_file_path(
+              tbl, col,
+              hnsw_make_file_path(db.c_str(), tbl.c_str(), col));
+        }
+        continue;
+      }
+
+      /* Try loading from .hnsw file on disk */
+      std::string hnsw_path =
+          hnsw_make_file_path(db.c_str(), tbl.c_str(), col);
+      innodb_vector::hnsw_config_t cfg;
+      auto idx = std::make_shared<innodb_vector::HnswIndex>(cfg);
+
+      if (idx->load_from_file(hnsw_path.c_str())) {
+        /* File found: config restored from file header */
+        hnsw_reg.register_loaded_index(tbl, col, std::move(idx), hnsw_path);
+        loaded_from_file.emplace_back(col, key->key_part[0].field);
+      } else {
+        /* .hnsw file missing or corrupt: register empty index from COMMENT.
+           Future INSERTs will populate it via write_row hook. */
+        Field *vec_field = key->key_part[0].field;
+        size_t dims = vec_field->field_length / sizeof(float);
+
+        uint32_t M = 16, ef = 200;
+        innodb_vector::hnsw_metric_t metric = innodb_vector::hnsw_metric_t::L2;
+        if (key->comment.str) {
+          innodb_vector::HnswIndexRegistry::parse_comment(
+              key->comment.str, &M, &ef, &metric);
+        }
+
+        hnsw_reg.register_index(tbl, col, dims, M, ef, metric);
+        hnsw_reg.set_file_path(tbl, col, hnsw_path);
+      }
+    }
+
+    /* Pass 2: Legacy auto-load for SQL-function-created indexes
+       (.hnsw files on disk without DD entries) */
+    for (uint i = 0; i < table->s->fields; i++) {
+      Field *fld = table->field[i];
+      if (fld->type() != MYSQL_TYPE_VECTOR) continue;
+      if (i < MAX_KEY && dd_handled[i]) continue; /* Already handled */
+
+      std::string col(fld->field_name);
+      if (hnsw_reg.has_index(tbl, col) || hnsw_reg.has_index(tbl, ""))
+        continue;
+
+      /* Try loading from .hnsw file on disk */
+      std::string hnsw_path =
+          hnsw_make_file_path(db.c_str(), tbl.c_str(), col);
+      std::string load_path;
+
+      {
+        std::ifstream f(hnsw_path, std::ios::binary);
+        if (f.good()) {
+          load_path = hnsw_path;
+        } else {
+          /* Try legacy path (no column in filename) */
+          std::string legacy =
+              hnsw_make_file_path(db.c_str(), tbl.c_str(), "");
+          std::ifstream f2(legacy, std::ios::binary);
+          if (f2.good()) {
+            load_path = legacy;
+            col = "";
+          }
+        }
+      }
+
+      if (load_path.empty()) continue;
+
+      innodb_vector::hnsw_config_t cfg;
+      auto idx = std::make_shared<innodb_vector::HnswIndex>(cfg);
+      if (idx->load_from_file(load_path.c_str())) {
+        hnsw_reg.register_loaded_index(tbl, col, std::move(idx), load_path);
+        loaded_from_file.emplace_back(col, fld);
+      }
+    }
+
+    /* HNSW Crash Recovery: mark indexes loaded from file as needing
+       reconciliation.  The actual reconciliation happens lazily on the
+       first HNSW search query via hnsw_index_read. */
+    for (const auto &[col_name, vec_field] : loaded_from_file) {
+      hnsw_reg.set_needs_reconcile(tbl, col_name, true);
+    }
   }
 
   return 0;
@@ -9461,6 +9797,47 @@ int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
     }
   }
 
+  /* HNSW Vector Index: auto-insert vectors into all registered HNSW indexes */
+  if (error == DB_SUCCESS) {
+    std::string hnsw_tbl_name(table->s->table_name.str);
+    auto &hnsw_registry = innodb_vector::HnswIndexRegistry::instance();
+
+    uint64_t hnsw_row_id = 0;
+    bool pk_extracted = false;
+
+    /* DD-declared HNSW indexes: iterate key_info */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+      if (key->user_defined_key_parts < 1) continue;
+
+      Field *fld = key->key_part[0].field;
+      std::string col_name(fld->field_name);
+
+      auto hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      if (!hnsw_idx) continue;
+
+      if (!pk_extracted) {
+        if (table->s->primary_key != MAX_KEY) {
+          KEY *pk = &table->key_info[table->s->primary_key];
+          Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+          hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
+        }
+        pk_extracted = true;
+      }
+
+      String vec_buf;
+      fld->val_str(&vec_buf);
+      if (vec_buf.length() >= sizeof(float)) {
+        const float *vec_ptr =
+            reinterpret_cast<const float *>(vec_buf.ptr());
+        size_t dims = vec_buf.length() / sizeof(float);
+        std::vector<float> vec_data(vec_ptr, vec_ptr + dims);
+        hnsw_idx->insert(hnsw_row_id, vec_data);
+      }
+    }
+  }
+
   innobase_srv_conc_exit_innodb(m_prebuilt);
 
 report_error:
@@ -10167,6 +10544,52 @@ int ha_innobase::update_row(const uchar *old_row, uchar *new_row) {
     }
   }
 
+  /* HNSW Vector Index: update vectors in all registered HNSW indexes */
+  if (error == DB_SUCCESS) {
+    std::string hnsw_tbl_name(table->s->table_name.str);
+    auto &hnsw_registry = innodb_vector::HnswIndexRegistry::instance();
+
+    uint64_t hnsw_row_id = 0;
+    bool pk_extracted = false;
+
+    /* DD-declared HNSW indexes: iterate key_info */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+      if (key->user_defined_key_parts < 1) continue;
+
+      Field *fld = key->key_part[0].field;
+      std::string col_name(fld->field_name);
+
+      auto hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      if (!hnsw_idx) continue;
+
+      if (!pk_extracted) {
+        if (table->s->primary_key != MAX_KEY) {
+          KEY *pk = &table->key_info[table->s->primary_key];
+          Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+          hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
+        }
+        pk_extracted = true;
+      }
+
+      /* Use new_row data for the updated vector */
+      ptrdiff_t row_offset = new_row - table->record[0];
+      fld->move_field_offset(row_offset);
+      String vec_buf;
+      fld->val_str(&vec_buf);
+      fld->move_field_offset(-row_offset);
+
+      if (vec_buf.length() >= sizeof(float)) {
+        const float *vec_ptr =
+            reinterpret_cast<const float *>(vec_buf.ptr());
+        size_t dims = vec_buf.length() / sizeof(float);
+        std::vector<float> vec_data(vec_ptr, vec_ptr + dims);
+        hnsw_idx->update(hnsw_row_id, vec_data);
+      }
+    }
+  }
+
   innobase_srv_conc_exit_innodb(m_prebuilt);
 
 func_exit:
@@ -10235,6 +10658,36 @@ int ha_innobase::delete_row(
   if (error == DB_SUCCESS) {
     error = row_update_for_mysql((byte *)record, m_prebuilt);
     innobase_srv_conc_exit_innodb(m_prebuilt);
+  }
+
+  /* HNSW Vector Index: remove vectors from all registered HNSW indexes */
+  if (error == DB_SUCCESS) {
+    std::string hnsw_tbl_name(table->s->table_name.str);
+    auto &hnsw_registry = innodb_vector::HnswIndexRegistry::instance();
+
+    uint64_t hnsw_row_id = 0;
+    bool pk_extracted = false;
+
+    /* DD-declared HNSW indexes: iterate key_info */
+    for (uint k = 0; k < table->s->keys; k++) {
+      KEY *key = &table->key_info[k];
+      if (key->algorithm != HA_KEY_ALG_HNSW) continue;
+
+      std::string col_name(key->key_part[0].field->field_name);
+      auto hnsw_idx = hnsw_registry.get_index(hnsw_tbl_name, col_name);
+      if (!hnsw_idx) continue;
+
+      if (!pk_extracted) {
+        if (table->s->primary_key != MAX_KEY) {
+          KEY *pk = &table->key_info[table->s->primary_key];
+          Field *pk_field = table->field[pk->key_part[0].fieldnr - 1];
+          hnsw_row_id = static_cast<uint64_t>(pk_field->val_int());
+        }
+        pk_extracted = true;
+      }
+
+      hnsw_idx->remove(hnsw_row_id);
+    }
   }
 
   /* Tell the InnoDB server that there might be work for
@@ -10342,6 +10795,20 @@ int ha_innobase::index_init(uint keynr, /*!< in: key (index) number */
 {
   DBUG_TRACE;
 
+  m_hnsw_scan.reset();
+
+  /* HNSW indexes are in-memory only (no InnoDB B-tree dict_index_t).
+  Set active_index and point m_prebuilt->index to the clustered index
+  so PK lookups work during the HNSW scan. Skip change_active_index()
+  which would fail trying to look up a non-existent InnoDB index. */
+  if (keynr < table_share->keys &&
+      table_share->key_info[keynr].algorithm == HA_KEY_ALG_HNSW) {
+    active_index = keynr;
+    m_prebuilt->index = m_prebuilt->table->first_index();
+    m_prebuilt->index_usable = true;
+    return 0;
+  }
+
   return change_active_index(keynr);
 }
 
@@ -10350,6 +10817,22 @@ int ha_innobase::index_init(uint keynr, /*!< in: key (index) number */
 
 int ha_innobase::index_end(void) {
   DBUG_TRACE;
+
+  /* Clean up HNSW scan state. If an HNSW scan was active, m_prebuilt->index
+  points to the clustered index (switched during hnsw_index_read), so the
+  last_sel_cur cleanup below is safe. If no HNSW scan was active and
+  index_init was for an HNSW key, m_prebuilt->index was never set, so
+  skip the last_sel_cur cleanup. */
+  if (m_hnsw_scan.active) {
+    m_hnsw_scan.reset();
+  } else if (active_index < table_share->keys &&
+             table_share->key_info[active_index].algorithm ==
+                 HA_KEY_ALG_HNSW) {
+    active_index = MAX_KEY;
+    in_range_check_pushed_down = false;
+    m_ds_mrr.dsmrr_close();
+    return 0;
+  }
 
   if (m_prebuilt->index->last_sel_cur) {
     m_prebuilt->index->last_sel_cur->release();
@@ -10454,6 +10937,127 @@ start of a new SQL statement. Since the query id can theoretically
 overwrap, we use this test only as a secondary way of determining the
 start of a new SQL statement. */
 
+/** Read a row by PK from the HNSW scan result cache.
+Switches to clustered index, builds PK key, and does a standard lookup.
+@return 0 or error number */
+int ha_innobase::hnsw_pk_lookup(uchar *buf) {
+  if (m_hnsw_scan.current_pos >= m_hnsw_scan.results.size()) {
+    return HA_ERR_END_OF_FILE;
+  }
+
+  uint64_t pk_val = m_hnsw_scan.results[m_hnsw_scan.current_pos].first;
+
+  uint pk_keynr = table->s->primary_key;
+  KEY *pk_key_info = &table->key_info[pk_keynr];
+  Field *pk_field = pk_key_info->key_part[0].field;
+
+  /* Temporarily allow writes to all columns so pk_field->store()
+  doesn't trip the write_set bitmap assert in Debug builds. */
+  my_bitmap_map *old_map = dbug_tmp_use_all_columns(table, table->write_set);
+
+  /* Store PK value into the field's location in record[0] */
+  pk_field->store(static_cast<longlong>(pk_val), true);
+
+  dbug_tmp_restore_column_map(table->write_set, old_map);
+
+  /* Build key from record buffer */
+  uchar pk_key_buf[MAX_KEY_LENGTH];
+  key_copy(pk_key_buf, table->record[0], pk_key_info,
+           pk_key_info->key_length);
+
+  /* Do standard PK lookup via clustered index.
+  This calls index_read() again but with HA_READ_KEY_EXACT on the
+  clustered index, so it takes the normal B-tree path (no recursion
+  into HNSW).
+
+  The executor may have set a record buffer on this handler for
+  multi-row prefetching.  The PK lookup will call build_template()
+  which sets templ_contains_blob (table has a VECTOR/BLOB column),
+  making can_prefetch_records() false.  Clear the buffer temporarily
+  so the ut_ad(can_prefetch_records() || record_buffer == nullptr)
+  assertion in row_search_mvcc() holds. */
+  Record_buffer *saved_rec_buf = ha_get_record_buffer();
+  ha_set_record_buffer(nullptr);
+
+  int err = index_read(buf, pk_key_buf, pk_key_info->key_length,
+                       HA_READ_KEY_EXACT);
+
+  ha_set_record_buffer(saved_rec_buf);
+  return err;
+}
+
+/** Execute HNSW vector search and read first result.
+@param[out]  buf       Buffer for the returned row
+@param[in]   key_ptr   Query vector bytes (raw floats)
+@param[in]   key_len   Length of query vector in bytes
+@return 0 or error number */
+int ha_innobase::hnsw_index_read(uchar *buf, const uchar *key_ptr,
+                                  uint key_len) {
+  /* Get table and column names for HNSW index lookup */
+  const char *tbl = table->s->table_name.str;
+  const char *col =
+      table_share->key_info[active_index].key_part[0].field->field_name;
+
+  auto &reg = innodb_vector::HnswIndexRegistry::instance();
+  auto hnsw = reg.get_index(tbl, col);
+  if (!hnsw) return HA_ERR_END_OF_FILE;
+
+  /* Lazy crash recovery: reconcile HNSW index with InnoDB data on first
+     search after loading from a stale .hnsw file.
+     Transition handler: end index → rnd scan → end rnd → restart index. */
+  if (reg.check_and_clear_reconcile(tbl, col)) {
+    if (table->s->primary_key != MAX_KEY) {
+      uint saved_idx = active_index;
+      KEY *pk = &table->key_info[table->s->primary_key];
+      Field *vec_field =
+          table->key_info[saved_idx].key_part[0].field;
+      /* End the HNSW index scan so the handler is in idle state */
+      ha_index_end();
+      hnsw_reconcile(this, table, std::string(tbl), std::string(col),
+                     vec_field, pk, hnsw);
+      /* Restart the index scan for the HNSW query and reset template
+         so PK lookups work properly after the reconciliation scan. */
+      ha_index_init(saved_idx, true);
+      force_template_rebuild();
+      hnsw = reg.get_index(tbl, col);
+      if (!hnsw) return HA_ERR_END_OF_FILE;
+    }
+  }
+
+  /* Build query vector from raw float bytes */
+  uint dims = key_len / sizeof(float);
+  std::vector<float> query(reinterpret_cast<const float *>(key_ptr),
+                           reinterpret_cast<const float *>(key_ptr) + dims);
+
+  /* Execute HNSW KNN search.
+  ef_search controls the recall/speed tradeoff: higher = better recall.
+  The session variable innodb_hnsw_ef_search allows per-query tuning. */
+  size_t ef = THDVAR(ha_thd(), hnsw_ef_search);
+  auto results = hnsw->search(query, ef, 0);
+
+  /* Cache results for iteration, sorted by distance ascending */
+  m_hnsw_scan.results.clear();
+  m_hnsw_scan.results.reserve(results.size());
+  for (auto &r : results) {
+    m_hnsw_scan.results.push_back({r.id, r.distance});
+  }
+  std::sort(m_hnsw_scan.results.begin(), m_hnsw_scan.results.end(),
+            [](const auto &a, const auto &b) { return a.second < b.second; });
+
+  m_hnsw_scan.current_pos = 0;
+  m_hnsw_scan.active = true;
+
+  if (m_hnsw_scan.results.empty()) return HA_ERR_END_OF_FILE;
+
+  /* Switch to clustered (PK) index for row lookups.
+  HNSW indexes have no InnoDB B-tree, so we need the clustered index
+  to actually read row data. */
+  int err = change_active_index(table->s->primary_key);
+  if (err) return err;
+
+  return hnsw_pk_lookup(buf);
+}
+
 /** Positions an index cursor to the index specified in the handle. Fetches the
  row if any.
  @return 0, HA_ERR_KEY_NOT_FOUND, or error number */
@@ -10475,6 +11079,15 @@ int ha_innobase::index_read(
 {
   DBUG_TRACE;
   DEBUG_SYNC_C("ha_innobase_index_read_begin");
+
+  /* HNSW Vector Index: intercept nearest-neighbor reads.
+  When the optimizer requests HA_READ_NEAREST_NEIGHBOR on an HNSW index,
+  execute the HNSW search and return results via clustered index lookups. */
+  if (find_flag == HA_READ_NEAREST_NEIGHBOR &&
+      active_index < table_share->keys &&
+      table_share->key_info[active_index].algorithm == HA_KEY_ALG_HNSW) {
+    return hnsw_index_read(buf, key_ptr, key_len);
+  }
 
   ut_a(m_prebuilt->trx == thd_to_trx(m_user_thd));
   ut_ad(key_len != 0 || find_flag != HA_READ_KEY_EXACT);
@@ -10676,6 +11289,11 @@ dict_index_t *ha_innobase::innobase_get_index(
   if (keynr != MAX_KEY && table->s->keys > 0) {
     key = table->key_info + keynr;
 
+    /* HNSW indexes have no dict_index_t — return NULL silently. */
+    if (key->algorithm == HA_KEY_ALG_HNSW) {
+      return nullptr;
+    }
+
     index = innobase_index_lookup(m_share, keynr);
 
     if (index != nullptr) {
@@ -10726,6 +11344,17 @@ int ha_innobase::change_active_index(
   }
 
   active_index = keynr;
+
+  /* HNSW vector indexes don't have a dict_index_t in InnoDB's internal
+     dictionary — they live in HnswIndexRegistry. Point m_prebuilt->index
+     to the clustered index so PK lookups work during the HNSW scan.
+     The actual search is handled in index_read() via HnswIndexRegistry. */
+  if (keynr != MAX_KEY && table->s->keys > keynr &&
+      table_share->key_info[keynr].algorithm == HA_KEY_ALG_HNSW) {
+    m_prebuilt->index = m_prebuilt->table->first_index();
+    m_prebuilt->index_usable = true;
+    return 0;
+  }
 
   m_prebuilt->index = innobase_get_index(keynr);
 
@@ -10816,6 +11445,15 @@ int ha_innobase::general_fetch(
                      ROW_SEL_EXACT_PREFIX */
 {
   DBUG_TRACE;
+
+  /* HNSW Vector Index: return next cached search result */
+  if (m_hnsw_scan.active) {
+    m_hnsw_scan.current_pos++;
+    if (m_hnsw_scan.current_pos >= m_hnsw_scan.results.size()) {
+      return HA_ERR_END_OF_FILE;
+    }
+    return hnsw_pk_lookup(buf);
+  }
 
   const trx_t *trx = m_prebuilt->trx;
 
@@ -15130,6 +15768,8 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
         }
         ut_d(ut_error);
         ut_o(break);
+      case dd::Index::IA_HNSW:
+        continue;  /* HNSW indexes are valid, managed by HnswIndexRegistry */
     }
 
     my_error(ER_UNSUPPORTED_INDEX_ALGORITHM, MYF(0), i->name().c_str());
@@ -15623,6 +16263,24 @@ int ha_innobase::delete_table(const char *name, const dd::Table *table_def) {
 
   if (table_def != nullptr && table_def->is_persistent()) {
     innobase_register_trx(ht, thd, trx);
+  }
+
+  /* HNSW: cleanup .hnsw files for dropped table */
+  {
+    auto &reg = innodb_vector::HnswIndexRegistry::instance();
+    std::string norm(name);
+    /* name format: "./schema/table" or "schema/table" */
+    size_t last_sep = norm.find_last_of("/\\");
+    std::string tbl_name =
+        (last_sep != std::string::npos) ? norm.substr(last_sep + 1) : norm;
+
+    auto cols = reg.get_columns_for_table(tbl_name);
+    for (auto &col : cols) {
+      reg.drop_index(tbl_name, col);
+    }
+    if (reg.has_index(tbl_name, "")) {
+      reg.drop_index(tbl_name, "");
+    }
   }
 
   return (innobase_basic_ddl::delete_impl(thd, name, table_def, nullptr));
@@ -17649,9 +18307,17 @@ int ha_innobase::info_low(uint flag, bool is_analyze) {
     }
   }
 
-  if (table->s->keys != num_innodb_index) {
+  /* Exclude HNSW indexes from the count comparison — they have no
+     InnoDB B-tree representation and live in HnswIndexRegistry. */
+  ulint mysql_keys_excl_hnsw = table->s->keys;
+  for (uint i = 0; i < table->s->keys; i++) {
+    if (table->key_info[i].algorithm == HA_KEY_ALG_HNSW) {
+      mysql_keys_excl_hnsw--;
+    }
+  }
+  if (mysql_keys_excl_hnsw != num_innodb_index) {
     log_errlog(ERROR_LEVEL, ER_INNODB_IDX_CNT_MORE_THAN_DEFINED_IN_MYSQL,
-               ib_table->name.m_name, num_innodb_index, table->s->keys);
+               ib_table->name.m_name, num_innodb_index, mysql_keys_excl_hnsw);
   }
 
   if (srv_force_recovery >= SRV_FORCE_NO_IBUF_MERGE) {
@@ -17702,6 +18368,13 @@ void ha_innobase::info_low_key(uint flag, const dict_table_t *ib_table) {
 
   for (uint i = 0; i < table->s->keys; i++) {
     DEBUG_SYNC_C("begin_of_index_stats_read");
+
+    /* HNSW indexes have no InnoDB B-tree representation — skip stats. */
+    if (table->key_info[i].algorithm == HA_KEY_ALG_HNSW) {
+      table->key_info[i].set_in_memory_estimate(IN_MEMORY_ESTIMATE_UNKNOWN);
+      continue;
+    }
+
     /* We could get index quickly through internal index mapping with the index
     translation table. The identity of index (match up index name with that of
     table->key_info[i]) is already verified in innobase_get_index(). */
@@ -22369,6 +23042,16 @@ static MYSQL_SYSVAR_ULONG(sync_array_size, srv_sync_array_size,
                           1024, 0);   /* Maximum value */
 
 static MYSQL_SYSVAR_ULONG(
+    hnsw_flush_interval, srv_hnsw_flush_interval, PLUGIN_VAR_RQCMDARG,
+    "Interval in seconds for flushing dirty HNSW vector indexes to disk. "
+    "Reduces data loss window on crash. 0 = disabled.",
+    nullptr, nullptr,
+    60,    /* Default: 60 seconds */
+    0,     /* Minimum: 0 (disabled) */
+    3600,  /* Maximum: 1 hour */
+    0);
+
+static MYSQL_SYSVAR_ULONG(
     fast_shutdown, srv_fast_shutdown, PLUGIN_VAR_OPCMDARG,
     "Speeds up the shutdown process of the InnoDB storage engine. Possible"
     " values are 0, 1 (faster) or 2 (fastest - crash-like).",
@@ -23616,6 +24299,8 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(ft_num_word_optimize),
     MYSQL_SYSVAR(ft_sort_pll_degree),
     MYSQL_SYSVAR(force_load_corrupted),
+    MYSQL_SYSVAR(hnsw_flush_interval),
+    MYSQL_SYSVAR(hnsw_ef_search),
     MYSQL_SYSVAR(lock_wait_timeout),
     MYSQL_SYSVAR(deadlock_detect),
     MYSQL_SYSVAR(page_size),

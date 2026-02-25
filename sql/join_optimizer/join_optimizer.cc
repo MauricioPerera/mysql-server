@@ -3966,12 +3966,31 @@ bool CostingReceiver::ProposeDistanceIndexScan(
   // TODO (Farthest Neighbor): if Overlaps(key_part.key_part_flag,
   // HA_REVERSE_SORT) is true then create and pass a new flag e.g.
   // HA_READ_FARTHEST_NEIGHBOR.
-  QUICK_RANGE *range = new (m_thd->mem_root) QUICK_RANGE(
-      m_thd->mem_root, reinterpret_cast<const uchar *>(order_info.coordinates),
-      sizeof(double) * 4, make_keypart_map(0),
-      reinterpret_cast<const uchar *>(order_info.coordinates), 0,
-      0,  // max_key unused
-      0 /*flag*/, HA_READ_NEAREST_NEIGHBOR);
+  QUICK_RANGE *range;
+  if (table->key_info[key_idx].algorithm == HA_KEY_ALG_HNSW) {
+    /* HNSW vector index: extract query vector bytes from the Item pointer
+    that was stored in coordinates by CollectOrderingsFromVectorIndex(). */
+    Item *query_item =
+        *reinterpret_cast<Item *const *>(order_info.coordinates);
+    String vec_buf;
+    String *vec_str = query_item->val_str(&vec_buf);
+    const uchar *vec_bytes =
+        vec_str ? reinterpret_cast<const uchar *>(vec_str->ptr()) : nullptr;
+    uint vec_len = vec_str ? vec_str->length() : 0;
+    range = new (m_thd->mem_root) QUICK_RANGE(
+        m_thd->mem_root, vec_bytes, vec_len, make_keypart_map(0),
+        vec_bytes, 0,
+        0,  // max_key unused
+        0 /*flag*/, HA_READ_NEAREST_NEIGHBOR);
+  } else {
+    range = new (m_thd->mem_root) QUICK_RANGE(
+        m_thd->mem_root,
+        reinterpret_cast<const uchar *>(order_info.coordinates),
+        sizeof(double) * 4, make_keypart_map(0),
+        reinterpret_cast<const uchar *>(order_info.coordinates), 0,
+        0,  // max_key unused
+        0 /*flag*/, HA_READ_NEAREST_NEIGHBOR);
+  }
   path.index_distance_scan().range = range;
 
   path.ordering_state = m_orderings->SetOrder(ordering_idx);
@@ -3980,6 +3999,15 @@ bool CostingReceiver::ProposeDistanceIndexScan(
   double cost;
 
   assert(!table->covering_keys.is_set(key_idx));
+
+  if (table->key_info[key_idx].algorithm == HA_KEY_ALG_HNSW) {
+    // HNSW graph search returns at most ef_search candidates (typically
+    // 10-1000), not all rows.  Use a bounded estimate so the optimizer
+    // sees a realistic cost and can prefer HNSW + FILTER over a primary
+    // key range scan + sort when WHERE predicates are present.
+    num_output_rows = std::min(num_output_rows, 200.0);
+  }
+
   // Same cost estimation for index scan and distance index scan.
   cost = table->file->read_cost(key_idx, /*ranges=*/1.0, num_output_rows)
              .total_cost();

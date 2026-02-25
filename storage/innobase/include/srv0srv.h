@@ -653,6 +653,8 @@ extern ulong srv_log_flusher_timeout;
 extern ulong srv_log_write_notifier_timeout;
 extern ulong srv_log_flush_notifier_timeout;
 
+extern ulong srv_hnsw_flush_interval;
+
 extern uint buf_LRU_old_threshold;
 
 extern ulong srv_n_page_cleaners;

@@ -5120,8 +5120,9 @@ static bool prepare_key_column(THD *thd, HA_CREATE_INFO *create_info,
     return true;
   }
 
-  // VECTOR columns cannot be used as keys
-  if (sql_field->sql_type == MYSQL_TYPE_VECTOR) {
+  // VECTOR columns cannot be used as keys (except HNSW indexes)
+  if (sql_field->sql_type == MYSQL_TYPE_VECTOR &&
+      key->key_create_info.algorithm != HA_KEY_ALG_HNSW) {
     my_error(ER_NON_SCALAR_USED_AS_KEY, MYF(0), column->get_field_name());
     return true;
   }
@@ -5165,6 +5166,18 @@ static bool prepare_key_column(THD *thd, HA_CREATE_INFO *create_info,
     column_length = is_blob(sql_field->sql_type);
   } else {
     switch (sql_field->sql_type) {
+      case MYSQL_TYPE_VECTOR:
+        /* HNSW indexes on vector columns: single-column, no prefix */
+        if (key_info->algorithm == HA_KEY_ALG_HNSW) {
+          if (key->columns.size() > 1) {
+            my_error(ER_TOO_MANY_KEY_PARTS, MYF(0), 1);
+            return true;
+          }
+          column_length = sql_field->key_length();
+          break;
+        }
+        /* Non-HNSW: fall through to default prefix handling */
+        [[fallthrough]];
       case MYSQL_TYPE_GEOMETRY:
         /* All indexes on geometry columns are R-tree indexes. */
         if (key->columns.size() > 1) {
@@ -5405,7 +5418,8 @@ static bool prepare_key_column(THD *thd, HA_CREATE_INFO *create_info,
   }
 
   if (key_part_length > file->max_key_part_length(create_info) &&
-      key->type != KEYTYPE_FULLTEXT) {
+      key->type != KEYTYPE_FULLTEXT &&
+      key_info->algorithm != HA_KEY_ALG_HNSW) {
     key_part_length = file->max_key_part_length(create_info);
     if (key->type == KEYTYPE_MULTIPLE) {
       /* not a critical problem */
@@ -7745,7 +7759,8 @@ static bool prepare_key(
   key_info->actual_flags = key_info->flags;
 
   if (key_info->key_length > file->max_key_length() &&
-      key->type != KEYTYPE_FULLTEXT) {
+      key->type != KEYTYPE_FULLTEXT &&
+      key_info->algorithm != HA_KEY_ALG_HNSW) {
     my_error(ER_TOO_LONG_KEY, MYF(0), file->max_key_length());
     if (thd->is_error())  // May be silenced - see Bug#20629014
       return true;

@@ -36,6 +36,7 @@
 
 class JOIN;
 class Item_func_match;
+class QUICK_RANGE;
 class store_key;
 struct POSITION;
 
@@ -217,6 +218,8 @@ enum join_type {
   JT_INDEX_SCAN,
   /* Fulltext index is used */
   JT_FT,
+  /* HNSW vector distance scan */
+  JT_DISTANCE_SCAN,
   /*
     Like ref, but with extra search for NULL values.
     E.g. used for "WHERE col = ... OR col IS NULL"
@@ -253,6 +256,7 @@ class QEP_shared {
         prefix_tables_map(0),
         added_tables_map(0),
         m_ft_func(nullptr),
+        m_hnsw_range(nullptr),
         m_skip_records_in_range(false) {}
 
   /*
@@ -309,6 +313,8 @@ class QEP_shared {
   table_map added_tables() const { return added_tables_map; }
   Item_func_match *ft_func() const { return m_ft_func; }
   void set_ft_func(Item_func_match *f) { m_ft_func = f; }
+  QUICK_RANGE *hnsw_range() const { return m_hnsw_range; }
+  void set_hnsw_range(QUICK_RANGE *r) { m_hnsw_range = r; }
 
   // More elaborate functions:
 
@@ -465,6 +471,9 @@ class QEP_shared {
   /** FT function */
   Item_func_match *m_ft_func;
 
+  /** HNSW distance scan range (query vector) */
+  QUICK_RANGE *m_hnsw_range;
+
   /**
     Set if index dive can be skipped for this query.
     See comments for check_skip_records_in_range_qualification.
@@ -538,6 +547,8 @@ class QEP_shared_owner {
   table_map added_tables() const { return m_qs->added_tables(); }
   Item_func_match *ft_func() const { return m_qs->ft_func(); }
   void set_ft_func(Item_func_match *f) { return m_qs->set_ft_func(f); }
+  QUICK_RANGE *hnsw_range() const { return m_qs->hnsw_range(); }
+  void set_hnsw_range(QUICK_RANGE *r) { return m_qs->set_hnsw_range(r); }
   void set_prefix_tables(table_map prefix_tables, table_map prev_tables) {
     return m_qs->set_prefix_tables(prefix_tables, prev_tables);
   }

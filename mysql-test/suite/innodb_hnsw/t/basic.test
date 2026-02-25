@@ -1,0 +1,65 @@
+--echo #
+--echo # HNSW Vector Index - Basic DDL Operations
+--echo #
+
+--echo # Create table with VECTOR column and HNSW index
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+
+--echo # Verify SHOW CREATE TABLE includes HNSW index
+SHOW CREATE TABLE t1;
+
+--echo # Verify index exists in information_schema
+SELECT index_name FROM information_schema.statistics
+  WHERE table_schema=DATABASE() AND table_name='t1' AND index_name='vec_idx';
+
+--echo # Drop the index
+DROP INDEX vec_idx ON t1;
+
+--echo # Verify index is gone
+SELECT COUNT(*) FROM information_schema.statistics
+  WHERE table_schema=DATABASE() AND table_name='t1' AND index_name='vec_idx';
+
+DROP TABLE t1;
+
+--echo #
+--echo # High-dimension vector (should NOT hit ER_TOO_LONG_KEY)
+--echo #
+CREATE TABLE t2 (
+  id INT PRIMARY KEY,
+  v VECTOR(1536)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t2(v);
+SHOW CREATE TABLE t2;
+DROP TABLE t2;
+
+--echo #
+--echo # HNSW index with COMMENT parameters
+--echo #
+CREATE TABLE t3 (
+  id INT PRIMARY KEY,
+  v VECTOR(128)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t3(v) COMMENT 'M=32,ef=400,metric=cosine';
+SHOW CREATE TABLE t3;
+DROP TABLE t3;
+
+--echo #
+--echo # Multiple HNSW indexes on same table
+--echo #
+CREATE TABLE t4 (
+  id INT PRIMARY KEY,
+  v1 VECTOR(64),
+  v2 VECTOR(128)
+) ENGINE=InnoDB;
+
+CREATE INDEX idx1 USING HNSW ON t4(v1);
+CREATE INDEX idx2 USING HNSW ON t4(v2);
+SHOW CREATE TABLE t4;
+DROP TABLE t4;

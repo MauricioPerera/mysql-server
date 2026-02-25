@@ -227,6 +227,9 @@ static enum ha_key_alg dd_get_old_index_algorithm_type(
     case dd::Index::IA_FULLTEXT:
       return HA_KEY_ALG_FULLTEXT;
 
+    case dd::Index::IA_HNSW:
+      return HA_KEY_ALG_HNSW;
+
     default:
       assert(!"Should not hit here"); /* purecov: deadcode */
   }
@@ -409,7 +412,11 @@ static bool prepare_share(THD *thd, TABLE_SHARE *share,
               field->part_of_sortkey = share->keys_in_use;
           }
         }
-        if (field->key_length() != key_part->length) {
+        /* HNSW indexes on VECTOR columns: Field_vector::key_length()
+           returns 0 (inherited from Field_blob), but key_part->length is
+           the vector pack size. Skip the prefix-key logic for HNSW. */
+        if (keyinfo->algorithm != HA_KEY_ALG_HNSW &&
+            field->key_length() != key_part->length) {
 #ifndef TO_BE_DELETED_ON_PRODUCTION
           if (field->type() == MYSQL_TYPE_NEWDECIMAL) {
             /*
@@ -442,7 +449,8 @@ static bool prepare_share(THD *thd, TABLE_SHARE *share,
           Check that dd::Index_element::is_prefix() used by SEs works in
           the same way as code which sets HA_PART_KEY_SEG flag.
         */
-        assert((*idx_el_it)->is_prefix() ==
+        assert(keyinfo->algorithm == HA_KEY_ALG_HNSW ||
+               (*idx_el_it)->is_prefix() ==
                static_cast<bool>(key_part->key_part_flag & HA_PART_KEY_SEG));
         ++idx_el_it;
       }

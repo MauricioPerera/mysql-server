@@ -1,0 +1,65 @@
+--echo #
+--echo # HNSW Vector Index - WHERE filtering with distance scan
+--echo #
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  category VARCHAR(10),
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+
+INSERT INTO t1 (category, v) VALUES
+  ('A', TO_VECTOR('[1,0,0,0]')),
+  ('B', TO_VECTOR('[0,1,0,0]')),
+  ('A', TO_VECTOR('[0.9,0.1,0,0]')),
+  ('B', TO_VECTOR('[0,0.9,0.1,0]')),
+  ('A', TO_VECTOR('[0.8,0.2,0,0]')),
+  ('B', TO_VECTOR('[0.1,0.8,0.1,0]')),
+  ('A', TO_VECTOR('[0.7,0.3,0,0]')),
+  ('B', TO_VECTOR('[0.2,0.7,0.1,0]'));
+
+--echo # Without WHERE: should use distance scan
+--replace_regex /cost=[\d.]+ rows=\d+/cost=N rows=N/
+EXPLAIN FORMAT=TREE SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 3;
+
+--echo # With WHERE on category: should use distance scan + filter
+--replace_regex /cost=[\d.]+ rows=\d+/cost=N rows=N/
+EXPLAIN FORMAT=TREE SELECT id, category FROM t1
+  WHERE category='A'
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 3;
+
+--echo # Results: only A rows, sorted by distance to [1,0,0,0]
+SELECT id, category FROM t1
+  WHERE category='A'
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 3;
+
+--echo # With WHERE on id range: should use distance scan + filter
+--replace_regex /cost=[\d.]+ rows=\d+/cost=N rows=N/
+EXPLAIN FORMAT=TREE SELECT id FROM t1
+  WHERE id > 2 AND id < 7
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # Results: only ids 3-6, sorted by distance
+SELECT id FROM t1
+  WHERE id > 2 AND id < 7
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # Brute-force comparison for correctness
+SELECT id FROM t1 IGNORE INDEX(vec_idx)
+  WHERE id > 2 AND id < 7
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # With WHERE on category B: should return B rows nearest to [1,0,0,0]
+SELECT id, category FROM t1
+  WHERE category='B'
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # Brute-force comparison
+SELECT id, category FROM t1 IGNORE INDEX(vec_idx)
+  WHERE category='B'
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+DROP TABLE t1;

@@ -3934,6 +3934,17 @@ AccessPath *QEP_TAB::access_path() {
       used_ref = &ref();
       break;
 
+    case JT_DISTANCE_SCAN: {
+      path = new (join()->thd->mem_root) AccessPath;
+      path->type = AccessPath::INDEX_DISTANCE_SCAN;
+      path->index_distance_scan().table = table();
+      path->index_distance_scan().idx = index();
+      path->index_distance_scan().range = hnsw_range();
+      path->index_distance_scan().reverse = false;
+      path->count_examined_rows = true;
+      break;
+    }
+
     case JT_INDEX_SCAN:
       path = NewIndexScanAccessPath(join()->thd, table(), index(), use_order(),
                                     m_reversed_access,

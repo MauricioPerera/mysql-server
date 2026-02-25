@@ -1901,4 +1901,83 @@ inline void tohex(char *to, uint64_t from, uint len) {
   }
 }
 
+/** VECTOR_SEARCH(query, column, k) - ANN search function */
+class Item_func_vector_search : public Item_str_func {
+ private:
+  String result_buffer;
+ public:
+  Item_func_vector_search(const POS &pos, PT_item_list *list)
+      : Item_str_func(pos, list) {}
+  Item_func_vector_search(const POS &pos, Item *a, Item *b, Item *c)
+      : Item_str_func(pos, a, b, c) {}
+  Item_func_vector_search(const POS &pos, Item *a, Item *b, Item *c, Item *d)
+      : Item_str_func(pos, a, b, c, d) {}
+  Item_func_vector_search(const POS &pos, Item *a, Item *b, Item *c, Item *d,
+                          Item *e)
+      : Item_str_func(pos, a, b, c, d, e) {}
+  String *val_str(String *str) override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "vector_search"; }
+};
+
+/** HNSW_CREATE_INDEX(table, dim, M, ef) - Create HNSW index */
+class Item_func_hnsw_create_index : public Item_str_func {
+ private:
+  String result_buffer;
+ public:
+  Item_func_hnsw_create_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
+      : Item_str_func(pos, list) {}
+  String *val_str(String *str) override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "hnsw_create_index"; }
+};
+
+/** HNSW_DROP_INDEX(table) - Drop HNSW index */
+class Item_func_hnsw_drop_index : public Item_str_func {
+ private:
+  String result_buffer;
+ public:
+  Item_func_hnsw_drop_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
+      : Item_str_func(pos, list) {}
+  String *val_str(String *str) override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "hnsw_drop_index"; }
+};
+
+/** HNSW_SAVE_INDEX(table, path) - Save HNSW index to file */
+class Item_func_hnsw_save_index : public Item_str_func {
+ private:
+  String result_buffer;
+ public:
+  Item_func_hnsw_save_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
+      : Item_str_func(pos, list) {}
+  String *val_str(String *str) override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "hnsw_save_index"; }
+};
+
+/** HNSW_LOAD_INDEX(table, path) - Load HNSW index from file */
+class Item_func_hnsw_load_index : public Item_str_func {
+ private:
+  String result_buffer;
+ public:
+  Item_func_hnsw_load_index(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
+      : Item_str_func(pos, list) {}
+  String *val_str(String *str) override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "hnsw_load_index"; }
+};
+
+/** HNSW_INFO(table [, column]) - Return JSON info about HNSW index */
+class Item_func_hnsw_info : public Item_str_func {
+ private:
+  String result_buffer;
+ public:
+  Item_func_hnsw_info(THD *thd [[maybe_unused]], const POS &pos, PT_item_list *list)
+      : Item_str_func(pos, list) {}
+  String *val_str(String *str) override;
+  bool resolve_type(THD *thd) override;
+  const char *func_name() const override { return "hnsw_info"; }
+};
+
 #endif /* ITEM_STRFUNC_INCLUDED */

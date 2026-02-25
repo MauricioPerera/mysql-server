@@ -264,6 +264,12 @@ bool dd_table_match(const dict_table_t *table, const Table *dd_table) {
   }
 
   for (const auto dd_index : dd_table->indexes()) {
+    /* HNSW vector indexes are managed by HnswIndexRegistry, not InnoDB's
+       internal dictionary. They have no dict_index_t representation. */
+    if (dd_index->index().algorithm() == dd::Index::IA_HNSW) {
+      continue;
+    }
+
     if (dd_table->tablespace_id() == dict_sys_t::s_dd_sys_space_id &&
         dd_index->tablespace_id() != dd_table->tablespace_id()) {
       ib::warn(ER_IB_MSG_167)
@@ -901,6 +907,9 @@ bool dd_table_discard_tablespace(THD *thd, const dict_table_t *table,
 
     /* Set index root page. */
     for (auto dd_index : *table_def->indexes()) {
+      /* HNSW indexes have no InnoDB B-tree representation */
+      if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
       const dict_index_t *index = dd_find_index(table, dd_index);
       ut_ad(index != nullptr);
 
@@ -2635,6 +2644,9 @@ void dd_write_table(dd::Object_id dd_space_id, Table *dd_table,
   }
 
   for (auto dd_index : *dd_table->indexes()) {
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
     /* Don't assume the index orders are the same, even on
     CREATE TABLE. This could be called from TRUNCATE path,
     which would do some adjustment on FULLTEXT index, thus
@@ -3146,6 +3158,9 @@ inline void dd_copy_from_table_share(THD *thd, dict_table_t *table,
   for (uint i = 0; i < table_share->keys; i++) {
     const KEY *key_info = &table_share->key_info[i];
 
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (key_info->algorithm == HA_KEY_ALG_HNSW) continue;
+
     ut_ad(index != nullptr);
 
     if (key_info->flags & HA_USES_COMMENT && key_info->comment.str != nullptr) {
@@ -3210,6 +3225,9 @@ inline int dd_fill_dict_index(const dd::Table &dd_table, const TABLE *m_form,
   }
 
   for (uint i = !m_form->s->primary_key; i < m_form->s->keys; i++) {
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (m_form->key_info[i].algorithm == HA_KEY_ALG_HNSW) continue;
+
     ulint dd_index_num = i + ((m_form->s->primary_key == MAX_KEY) ? 1 : 0);
 
     error = dd_fill_one_dict_index(dd_table.indexes()[dd_index_num], m_table,
@@ -5108,6 +5126,9 @@ dict_table_t *dd_open_table_one(dd::cache::Dictionary_client *client,
   /* Now fill the space ID and Root page number for each index */
   dict_index_t *index = m_table->first_index();
   for (const auto dd_index : dd_table->indexes()) {
+    /* HNSW indexes have no InnoDB B-tree representation */
+    if (dd_index->index().algorithm() == dd::Index::IA_HNSW) continue;
+
     ut_ad(index != nullptr);
 
     const dd::Properties &se_private_data = dd_index->se_private_data();

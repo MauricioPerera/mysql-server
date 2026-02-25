@@ -1,0 +1,38 @@
+--echo #
+--echo # HNSW Vector Index - KNN Search Operations
+--echo #
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  v VECTOR(4)
+) ENGINE=InnoDB;
+
+CREATE INDEX vec_idx USING HNSW ON t1(v);
+
+INSERT INTO t1 VALUES (1, TO_VECTOR('[1,0,0,0]'));
+INSERT INTO t1 VALUES (2, TO_VECTOR('[0,1,0,0]'));
+INSERT INTO t1 VALUES (3, TO_VECTOR('[0,0,1,0]'));
+INSERT INTO t1 VALUES (4, TO_VECTOR('[1,1,0,0]'));
+
+--echo # EXPLAIN should show distance index scan
+--replace_regex /cost=[\d.]+ rows=\d+/cost=N rows=N/
+EXPLAIN FORMAT=TREE SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # KNN: closest to [1,0,0,0] should be id=1 (dist=0), then id=4 (dist=1)
+SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # Brute force comparison via IGNORE INDEX
+SELECT id FROM t1 IGNORE INDEX(vec_idx)
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') LIMIT 2;
+
+--echo # KNN: closest to [0,0,1,0] should be id=3
+SELECT id FROM t1
+  ORDER BY VECTOR_DISTANCE(v, TO_VECTOR('[0,0,1,0]'), 'L2') LIMIT 1;
+
+--echo # All results with distances
+SELECT id, VECTOR_DISTANCE(v, TO_VECTOR('[1,0,0,0]'), 'L2') AS dist FROM t1
+  ORDER BY dist LIMIT 4;
+
+DROP TABLE t1;
